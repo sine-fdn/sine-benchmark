@@ -2,16 +2,15 @@ use clap::Parser;
 use futures::StreamExt;
 use libp2p::{
     gossipsub, identity, noise,
-    request_response::{self, ProtocolSupport},
     swarm::{NetworkBehaviour, SwarmEvent},
-    upnp, yamux, Multiaddr, PeerId, StreamProtocol,
+    upnp, yamux, Multiaddr, PeerId,
 };
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, error::Error, time::Duration};
 use tokio::{
     io::{self, AsyncBufReadExt},
-    select, task::JoinSet,
+    select,
 };
 
 /// Peer-to-peer benchmarking against group average without disclosing inputs
@@ -96,7 +95,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut phase = Phase::WaitingForParticipants;
     let mut stdin = io::BufReader::new(io::stdin()).lines();
     let mut participants = HashMap::<PeerId, (String, Multiaddr)>::new();
-    let mut direct_connections = HashMap::new();
     enum Event {
         Upnp(upnp::Event),
         Gossipsub(gossipsub::Event),
@@ -105,28 +103,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let confirm_msg = "Please double-check the peer ids. Do you want to join the benchmark? [Y/n]";
     let starting_msg = "Starting benchmark with the current participants...";
     loop {
-        if let Phase::SendingShares = phase {
-            if direct_connections.is_empty() {
-                for (peer_id, (_, addr)) in participants.iter() {
-                    let mut swarm = libp2p::SwarmBuilder::with_existing_identity(my_key.clone())
-                        .with_tokio()
-                        .with_tcp(
-                            Default::default(),
-                            noise::Config::new,
-                            yamux::Config::default,
-                        )?
-                        .with_behaviour(|_| {
-                            request_response::json::Behaviour::<i64, ()>::new(
-                                [(StreamProtocol::new("/json-shares"), ProtocolSupport::Full)],
-                                request_response::Config::default(),
-                            )
-                        })?
-                        .build();
-                    swarm.dial(addr.clone())?;
-                    direct_connections.insert(peer_id.clone(), swarm);
-                }
-            }
-        }
         let ev = select! {
             Ok(Some(line)) = stdin.next_line() => {
                 Some(Event::StdIn(line))
@@ -204,12 +180,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 break;
             }
             Event::Upnp(ev) => info!("{ev:?}"),
-            Event::Gossipsub(gossipsub::Event::Subscribed { .. }) => {
-                /*let Some(my_addr) = &my_addr else {
-                    eprintln!("Received message before having an external address, exiting...");
-                    std::process::exit(1);
-                };*/
-            }
             Event::Gossipsub(gossipsub::Event::Message {
                 propagation_source,
                 message,

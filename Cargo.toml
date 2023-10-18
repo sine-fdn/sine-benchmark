@@ -18,8 +18,6 @@ libp2p = { git = "https://github.com/libp2p/rust-libp2p", features = [
     "upnp",
     "yamux",
     "serde",
-    "request-response",
-    "json",
 ] }
 env_logger = "0.10.0"
 log = "0.4.19"

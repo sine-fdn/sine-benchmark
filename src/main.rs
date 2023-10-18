@@ -105,19 +105,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         let ev = select! {
             Ok(Some(line)) = stdin.next_line() => {
-                Some(Event::StdIn(line))
+                Event::StdIn(line)
             }
             ev = swarm.select_next_some() => match ev {
-                SwarmEvent::Behaviour(MyBehaviourEvent::Upnp(ev)) => Some(Event::Upnp(ev)),
-                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(ev)) => Some(Event::Gossipsub(ev)),
+                SwarmEvent::Behaviour(MyBehaviourEvent::Upnp(ev)) => Event::Upnp(ev),
+                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(ev)) => Event::Gossipsub(ev),
                 ev => {
                     info!("{ev:?}");
-                    None
+                    continue;
                 }
             },
-        };
-        let Some(ev) = ev else {
-            continue;
         };
         match ev {
             Event::StdIn(line) => match phase {

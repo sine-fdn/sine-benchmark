@@ -1,17 +1,25 @@
 use clap::Parser;
 use futures::StreamExt;
 use libp2p::{
-    gossipsub, identity, noise,
+    gossipsub, noise,
     swarm::{NetworkBehaviour, SwarmEvent},
-    upnp, yamux, Multiaddr, PeerId,
+    upnp, yamux, Multiaddr,
 };
 use log::{error, info};
+use rsa::{
+    pkcs8::{EncodePublicKey, LineEnding},
+    RsaPrivateKey, RsaPublicKey,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, error::Error, time::Duration};
 use tokio::{
     io::{self, AsyncBufReadExt},
     select,
 };
+
+const KEY_BITS: usize = 2048;
+
+type PublicKey = String;
 
 /// Peer-to-peer benchmarking against group average without disclosing inputs
 #[derive(Parser, Debug)]
@@ -38,15 +46,15 @@ struct MyBehaviour {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Msg {
-    Join(PeerId, String, Multiaddr),
-    Participants(HashMap<PeerId, (String, Multiaddr)>),
+    Join(PublicKey, String, Multiaddr),
+    Participants(HashMap<PublicKey, (String, Multiaddr)>),
     LobbyNowClosed,
     Share {
-        from: PeerId,
-        to: PeerId,
+        from: PublicKey,
+        to: PublicKey,
         share: u64,
     },
-    Sum(PeerId, u64),
+    Sum(PublicKey, u64),
     Result(f64),
 }
 
@@ -72,9 +80,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         value: secret_value,
     } = Args::parse();
 
-    let my_key = identity::Keypair::generate_ed25519();
-    let my_peer_id = PeerId::from(my_key.public());
-    let mut swarm = libp2p::SwarmBuilder::with_existing_identity(my_key.clone())
+    // let my_key = identity::Keypair::generate_ed25519();
+    // let my_peer_id = PeerId::from(my_key.public());
+    let mut rng = rand::thread_rng();
+    let my_priv_key = RsaPrivateKey::new(&mut rng, KEY_BITS).expect("failed to generate a key");
+    let my_pub_key = RsaPublicKey::from(&my_priv_key)
+        .to_public_key_pem(LineEnding::default())
+        .expect("could not serialize public key");
+    // let mut swarm = libp2p::SwarmBuilder::with_existing_identity(my_key.clone())
+    let mut swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
         .with_tcp(
             Default::default(),
@@ -109,17 +123,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut phase = Phase::WaitingForParticipants;
     let mut stdin = io::BufReader::new(io::stdin()).lines();
-    let mut participants = HashMap::<PeerId, (String, Multiaddr)>::new();
-    let mut sent_shares = HashMap::<PeerId, u64>::new();
-    let mut received_shares = HashMap::<PeerId, u64>::new();
-    let mut sums = HashMap::<PeerId, u64>::new();
+    let mut participants = HashMap::<PublicKey, (String, Multiaddr)>::new();
+    let mut sent_shares = HashMap::<PublicKey, u64>::new();
+    let mut received_shares = HashMap::<PublicKey, u64>::new();
+    let mut sums = HashMap::<PublicKey, u64>::new();
     let mut result = None;
     enum Event {
         Upnp(upnp::Event),
         StdIn(String),
         Msg(Msg),
     }
-    let confirm_msg = "Please double-check the peer ids. Do you want to join the benchmark? [Y/n]";
+    let confirm_msg = "Please double-check the public keys of your peers. Do you want to join the benchmark? [Y/n]";
     let starting_msg = "Starting benchmark with the current participants...";
     loop {
         if let Phase::SendingShares = phase {
@@ -127,15 +141,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 std::process::exit(0);
             }
             if sent_shares.is_empty() {
-                for peer_id in participants.keys() {
-                    if *peer_id == my_peer_id {
+                for public_key in participants.keys() {
+                    if *public_key == my_pub_key.clone() {
                         continue;
                     }
                     let share = rand::random();
-                    sent_shares.insert(peer_id.clone(), share);
+                    sent_shares.insert(public_key.clone(), share);
                     let msg = Msg::Share {
-                        to: peer_id.clone(),
-                        from: my_peer_id,
+                        to: public_key.clone(),
+                        from: my_pub_key.clone(),
                         share,
                     }
                     .serialize()?;
@@ -155,9 +169,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 for received in received_shares.values() {
                     public_sum = public_sum.wrapping_add(*received);
                 }
-                let msg = Msg::Sum(my_peer_id, public_sum).serialize()?;
+                let msg = Msg::Sum(my_pub_key.clone(), public_sum).serialize()?;
                 if is_leader {
-                    sums.insert(my_peer_id, public_sum);
+                    sums.insert(my_pub_key.clone(), public_sum);
                 }
                 swarm
                     .behaviour_mut()
@@ -197,8 +211,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         error!("Received invalid message from {propagation_source}");
                         continue;
                     };
-                    if let Msg::Share { from, to, share } = msg {
-                        if to == my_peer_id {
+                    if let Msg::Share { from, to, share } = msg.clone() {
+                        if to == my_pub_key.clone() {
                             if participants.contains_key(&from) {
                                 received_shares.insert(from, share);
                             }
@@ -247,19 +261,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     );
                     println!("");
                     println!("-- Participants --");
-                    println!("{my_peer_id} - {name}");
+                    println!("{my_pub_key} - {name}");
                 } else {
-                    let msg = Msg::Join(my_peer_id, name.clone(), addr.clone()).serialize()?;
+                    let msg = Msg::Join(my_pub_key.clone(), name.clone(), addr.clone()).serialize()?;
                     swarm
                         .behaviour_mut()
                         .gossipsub
                         .publish(topic.clone(), msg)?;
                     println!("");
                     println!("-- Participants --");
-                    println!("{my_peer_id} - {name}");
+                    println!("{my_pub_key} - {name}");
                 }
                 swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
-                participants.insert(my_peer_id, (name.clone(), addr.clone()));
+                participants.insert(my_pub_key.clone(), (name.clone(), addr.clone()));
             }
             (_, Event::Upnp(upnp::Event::GatewayNotFound)) => {
                 error!("Gateway does not support UPnP");
@@ -271,10 +285,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             (_, Event::Upnp(ev)) => info!("{ev:?}"),
             (Phase::WaitingForParticipants, Event::Msg(msg)) => match msg {
-                Msg::Join(peer_id, name, addr) => {
+                Msg::Join(public_key, name, addr) => {
                     if is_leader {
-                        println!("{peer_id} - {name}");
-                        participants.insert(peer_id, (name, addr));
+                        println!("{public_key} - {name}");
+                        participants.insert(public_key, (name, addr));
                         let msg = Msg::Participants(participants.clone()).serialize()?;
                         if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
                         {
@@ -283,9 +297,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 Msg::Participants(all_participants) => {
-                    for (peer_id, (name, _)) in all_participants.iter() {
-                        if !participants.contains_key(&peer_id) {
-                            println!("{peer_id} - {name}");
+                    for (public_key, (name, _)) in all_participants.iter() {
+                        if !participants.contains_key(public_key) {
+                            println!("{public_key} - {name}");
                         }
                     }
                     participants = all_participants;
@@ -320,9 +334,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     continue;
                 }
                 Msg::Share { .. } => {}
-                Msg::Sum(peer_id, sum) => {
+                Msg::Sum(public_key, sum) => {
                     if is_leader {
-                        sums.insert(peer_id, sum);
+                        sums.insert(public_key, sum);
                     }
                 }
                 Msg::Result(avg) => {

@@ -24,6 +24,10 @@ struct Args {
     /// Human-readable alias used to identify each participant
     #[arg(short, long)]
     name: String,
+
+    /// Integer value to benchmark
+    #[arg(short, long)]
+    value: u64,
 }
 
 #[derive(NetworkBehaviour)]
@@ -37,6 +41,13 @@ enum Msg {
     Join(PeerId, String, Multiaddr),
     Participants(HashMap<PeerId, (String, Multiaddr)>),
     LobbyNowClosed,
+    Share {
+        from: PeerId,
+        to: PeerId,
+        share: u64,
+    },
+    Sum(PeerId, u64),
+    Result(f64),
 }
 
 impl Msg {
@@ -50,13 +61,16 @@ enum Phase {
     WaitingForParticipants,
     ConfirmingParticipants,
     SendingShares,
-    //SendingSums,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
-    let Args { address, name } = Args::parse();
+    let Args {
+        address,
+        name,
+        value: secret_value,
+    } = Args::parse();
 
     let my_key = identity::Keypair::generate_ed25519();
     let my_peer_id = PeerId::from(my_key.public());
@@ -96,21 +110,102 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut phase = Phase::WaitingForParticipants;
     let mut stdin = io::BufReader::new(io::stdin()).lines();
     let mut participants = HashMap::<PeerId, (String, Multiaddr)>::new();
+    let mut sent_shares = HashMap::<PeerId, u64>::new();
+    let mut received_shares = HashMap::<PeerId, u64>::new();
+    let mut sums = HashMap::<PeerId, u64>::new();
+    let mut result = None;
     enum Event {
         Upnp(upnp::Event),
-        Gossipsub(gossipsub::Event),
         StdIn(String),
+        Msg(Msg),
     }
     let confirm_msg = "Please double-check the peer ids. Do you want to join the benchmark? [Y/n]";
     let starting_msg = "Starting benchmark with the current participants...";
     loop {
+        if let Phase::SendingShares = phase {
+            if swarm.behaviour().gossipsub.all_peers().count() == 0 {
+                std::process::exit(0);
+            }
+            if sent_shares.is_empty() {
+                for peer_id in participants.keys() {
+                    if *peer_id == my_peer_id {
+                        continue;
+                    }
+                    let share = rand::random();
+                    sent_shares.insert(peer_id.clone(), share);
+                    let msg = Msg::Share {
+                        to: peer_id.clone(),
+                        from: my_peer_id,
+                        share,
+                    }
+                    .serialize()?;
+                    swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .publish(topic.clone(), msg)?;
+                }
+            }
+            if received_shares.len() == participants.len() - 1 {
+                let mut sent_sum: u64 = 0;
+                for sent in sent_shares.values() {
+                    sent_sum = sent_sum.wrapping_add(*sent);
+                }
+                let masked_secret: u64 = secret_value.wrapping_sub(sent_sum);
+                let mut public_sum = masked_secret;
+                for received in received_shares.values() {
+                    public_sum = public_sum.wrapping_add(*received);
+                }
+                let msg = Msg::Sum(my_peer_id, public_sum).serialize()?;
+                if is_leader {
+                    sums.insert(my_peer_id, public_sum);
+                }
+                swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .publish(topic.clone(), msg)?;
+            }
+            if is_leader && sums.len() == participants.len() {
+                let mut sum: u64 = 0;
+                for s in sums.values() {
+                    sum = sum.wrapping_add(*s);
+                }
+                let avg = sum as f64 / participants.len() as f64;
+                let msg = Msg::Result(avg).serialize()?;
+                swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .publish(topic.clone(), msg)?;
+                if result.is_none() {
+                    result = Some(avg);
+                    println!("");
+                    println!("The average of the benchmarked values is: {avg:.2}");
+                }
+            }
+        }
         let ev = select! {
             Ok(Some(line)) = stdin.next_line() => {
                 Event::StdIn(line)
             }
             ev = swarm.select_next_some() => match ev {
                 SwarmEvent::Behaviour(MyBehaviourEvent::Upnp(ev)) => Event::Upnp(ev),
-                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(ev)) => Event::Gossipsub(ev),
+                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                    propagation_source,
+                    message,
+                    ..
+                })) => {
+                    let Ok(msg) = bincode::deserialize::<Msg>(&message.data) else {
+                        error!("Received invalid message from {propagation_source}");
+                        continue;
+                    };
+                    if let Msg::Share { from, to, share } = msg {
+                        if to == my_peer_id {
+                            if participants.contains_key(&from) {
+                                received_shares.insert(from, share);
+                            }
+                        }
+                    }
+                    Event::Msg(msg)
+                },
                 ev => {
                     info!("{ev:?}");
                     continue;
@@ -145,7 +240,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             (Phase::WaitingForParticipants, Event::Upnp(upnp::Event::NewExternalAddr(addr))) => {
                 if is_leader {
                     println!("A new session has been started, others can join using the following command:");
-                    println!("cargo run -- --address={addr} --name=<your_alias>");
+                    println!("cargo run -- --address={addr} --name=alias --value=");
                     println!("");
                     println!(
                         "Press ENTER to start the benchmark once all participants have joined."
@@ -166,9 +261,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
                 participants.insert(my_peer_id, (name.clone(), addr.clone()));
             }
-            (_, Event::Upnp(upnp::Event::NewExternalAddr(_))) => {
-                todo!()
-            }
             (_, Event::Upnp(upnp::Event::GatewayNotFound)) => {
                 error!("Gateway does not support UPnP");
                 break;
@@ -178,54 +270,68 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 break;
             }
             (_, Event::Upnp(ev)) => info!("{ev:?}"),
-            (
-                Phase::WaitingForParticipants,
-                Event::Gossipsub(gossipsub::Event::Message {
-                    propagation_source,
-                    message,
-                    ..
-                }),
-            ) => {
-                let Ok(msg) = bincode::deserialize::<Msg>(&message.data) else {
-                    error!("Received invalid message from {propagation_source}");
-                    continue;
-                };
-                match msg {
-                    Msg::Join(peer_id, name, addr) => {
-                        if is_leader {
-                            println!("{peer_id} - {name}");
-                            participants.insert(peer_id, (name, addr));
-                            let msg = Msg::Participants(participants.clone()).serialize()?;
-                            if let Err(e) =
-                                swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
-                            {
-                                error!("Could not publish to gossipsub: {e:?}");
-                            }
-                        }
-                    }
-                    Msg::Participants(all_participants) => {
-                        for (peer_id, (name, _)) in all_participants.iter() {
-                            if !participants.contains_key(&peer_id) {
-                                println!("{peer_id} - {name}");
-                            }
-                        }
-                        participants = all_participants;
-                    }
-                    Msg::LobbyNowClosed => {
-                        if is_leader {
-                            error!("This message should never be sent to the benchmark leader!");
-                        } else if participants.len() < 3 {
-                            eprintln!("Someone tried to start a benchmark with < 3 participants!");
-                            std::process::exit(1);
-                        } else {
-                            phase = Phase::ConfirmingParticipants;
-                            println!("");
-                            println!("{confirm_msg}");
+            (Phase::WaitingForParticipants, Event::Msg(msg)) => match msg {
+                Msg::Join(peer_id, name, addr) => {
+                    if is_leader {
+                        println!("{peer_id} - {name}");
+                        participants.insert(peer_id, (name, addr));
+                        let msg = Msg::Participants(participants.clone()).serialize()?;
+                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
+                        {
+                            error!("Could not publish to gossipsub: {e:?}");
                         }
                     }
                 }
-            }
-            (_, Event::Gossipsub(ev)) => info!("{ev:?}"),
+                Msg::Participants(all_participants) => {
+                    for (peer_id, (name, _)) in all_participants.iter() {
+                        if !participants.contains_key(&peer_id) {
+                            println!("{peer_id} - {name}");
+                        }
+                    }
+                    participants = all_participants;
+                }
+                Msg::LobbyNowClosed => {
+                    if is_leader {
+                        error!("This message should never be sent to the benchmark leader!");
+                    } else if participants.len() < 3 {
+                        eprintln!("Someone tried to start a benchmark with < 3 participants!");
+                        std::process::exit(1);
+                    } else {
+                        phase = Phase::ConfirmingParticipants;
+                        println!("");
+                        println!("{confirm_msg}");
+                    }
+                }
+                Msg::Share { .. } => {}
+                Msg::Sum(_, _) => {
+                    error!("Received sum from participant while still waiting for participants to join!");
+                    std::process::exit(1);
+                }
+                Msg::Result(_) => {
+                    error!("Received result while still waiting for participants to join!");
+                    std::process::exit(1);
+                }
+            },
+            (Phase::SendingShares, Event::Msg(msg)) => match msg {
+                Msg::Join(_, _, _) | Msg::Participants(_) | Msg::LobbyNowClosed => {
+                    println!(
+                        "Already waiting for shares, but some participant still tried to join!"
+                    );
+                    continue;
+                }
+                Msg::Share { .. } => {}
+                Msg::Sum(peer_id, sum) => {
+                    if is_leader {
+                        sums.insert(peer_id, sum);
+                    }
+                }
+                Msg::Result(avg) => {
+                    println!("");
+                    println!("The average of the benchmarked values is: {avg:.2}");
+                    std::process::exit(0);
+                }
+            },
+            (Phase::ConfirmingParticipants, _) => {}
         }
     }
     Ok(())

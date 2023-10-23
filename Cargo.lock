@@ -1873,6 +1873,7 @@ dependencies = [
  "futures",
  "libp2p",
  "log",
+ "rand",
  "serde",
  "tokio",
 ]

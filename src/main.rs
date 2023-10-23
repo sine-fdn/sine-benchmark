@@ -46,8 +46,8 @@ struct MyBehaviour {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Msg {
-    Join(PublicKey, String, Multiaddr),
-    Participants(HashMap<PublicKey, (String, Multiaddr)>),
+    Join(PublicKey, String),
+    Participants(HashMap<PublicKey, String>),
     LobbyNowClosed,
     Share {
         from: PublicKey,
@@ -123,7 +123,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut phase = Phase::WaitingForParticipants;
     let mut stdin = io::BufReader::new(io::stdin()).lines();
-    let mut participants = HashMap::<PublicKey, (String, Multiaddr)>::new();
+    let mut participants = HashMap::<PublicKey, String>::new();
     let mut sent_shares = HashMap::<PublicKey, u64>::new();
     let mut received_shares = HashMap::<PublicKey, u64>::new();
     let mut sums = HashMap::<PublicKey, u64>::new();
@@ -263,7 +263,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("-- Participants --");
                     println!("{my_pub_key} - {name}");
                 } else {
-                    let msg = Msg::Join(my_pub_key.clone(), name.clone(), addr.clone()).serialize()?;
+                    let msg = Msg::Join(my_pub_key.clone(), name.clone()).serialize()?;
                     swarm
                         .behaviour_mut()
                         .gossipsub
@@ -273,7 +273,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("{my_pub_key} - {name}");
                 }
                 swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
-                participants.insert(my_pub_key.clone(), (name.clone(), addr.clone()));
+                participants.insert(my_pub_key.clone(), name.clone());
             }
             (_, Event::Upnp(upnp::Event::GatewayNotFound)) => {
                 error!("Gateway does not support UPnP");
@@ -285,10 +285,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             (_, Event::Upnp(ev)) => info!("{ev:?}"),
             (Phase::WaitingForParticipants, Event::Msg(msg)) => match msg {
-                Msg::Join(public_key, name, addr) => {
+                Msg::Join(public_key, name) => {
                     if is_leader {
                         println!("{public_key} - {name}");
-                        participants.insert(public_key, (name, addr));
+                        participants.insert(public_key, name);
                         let msg = Msg::Participants(participants.clone()).serialize()?;
                         if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
                         {
@@ -297,7 +297,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 Msg::Participants(all_participants) => {
-                    for (public_key, (name, _)) in all_participants.iter() {
+                    for (public_key, name) in all_participants.iter() {
                         if !participants.contains_key(public_key) {
                             println!("{public_key} - {name}");
                         }
@@ -327,7 +327,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             },
             (Phase::SendingShares, Event::Msg(msg)) => match msg {
-                Msg::Join(_, _, _) | Msg::Participants(_) | Msg::LobbyNowClosed => {
+                Msg::Join(_, _) | Msg::Participants(_) | Msg::LobbyNowClosed => {
                     println!(
                         "Already waiting for shares, but some participant still tried to join!"
                     );

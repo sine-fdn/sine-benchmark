@@ -32,7 +32,7 @@ struct MyBehaviour {
     gossipsub: gossipsub::Behaviour,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum Msg {
     Join(PeerId, String, Multiaddr),
     Participants(HashMap<PeerId, (String, Multiaddr)>),
@@ -45,6 +45,7 @@ impl Msg {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 enum Phase {
     WaitingForParticipants,
     ConfirmingParticipants,
@@ -116,35 +117,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             },
         };
-        match ev {
-            Event::StdIn(line) => match phase {
-                Phase::WaitingForParticipants if is_leader => {
-                    if participants.len() < 3 {
-                        println!("Cannot start yet, at least 3 participants are needed to ensure that inputs remain private.");
-                        continue;
-                    }
+        match (phase, ev) {
+            (Phase::WaitingForParticipants, Event::StdIn(_)) if is_leader => {
+                if participants.len() < 3 {
+                    println!("Cannot start yet, at least 3 participants are needed to ensure that inputs remain private.");
+                    continue;
+                }
+                println!("{starting_msg}");
+                phase = Phase::SendingShares;
+                let msg = Msg::LobbyNowClosed.serialize()?;
+                swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .publish(topic.clone(), msg)?;
+            }
+            (Phase::ConfirmingParticipants, Event::StdIn(line)) => {
+                if line.trim().is_empty() || line.trim().to_lowercase() == "y" {
                     println!("{starting_msg}");
                     phase = Phase::SendingShares;
-                    let msg = Msg::LobbyNowClosed.serialize()?;
-                    swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .publish(topic.clone(), msg)?;
+                } else if line.trim().to_lowercase() == "n" {
+                    std::process::exit(0);
+                } else {
+                    println!("{confirm_msg}");
                 }
-                Phase::WaitingForParticipants => {}
-                Phase::ConfirmingParticipants => {
-                    if line.trim().is_empty() || line.trim().to_lowercase() == "y" {
-                        println!("{starting_msg}");
-                        phase = Phase::SendingShares;
-                    } else if line.trim().to_lowercase() == "n" {
-                        std::process::exit(0);
-                    } else {
-                        println!("{confirm_msg}");
-                    }
-                }
-                Phase::SendingShares => {}
-            },
-            Event::Upnp(upnp::Event::NewExternalAddr(addr)) => {
+            }
+            (_, Event::StdIn(_)) => {}
+            (Phase::WaitingForParticipants, Event::Upnp(upnp::Event::NewExternalAddr(addr))) => {
                 if is_leader {
                     println!("A new session has been started, others can join using the following command:");
                     println!("cargo run -- --address={addr} --name=<your_alias>");
@@ -168,35 +166,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
                 participants.insert(my_peer_id, (name.clone(), addr.clone()));
             }
-            Event::Upnp(upnp::Event::GatewayNotFound) => {
-                println!("Gateway does not support UPnP");
+            (_, Event::Upnp(upnp::Event::NewExternalAddr(_))) => {
+                todo!()
+            }
+            (_, Event::Upnp(upnp::Event::GatewayNotFound)) => {
+                error!("Gateway does not support UPnP");
                 break;
             }
-            Event::Upnp(upnp::Event::NonRoutableGateway) => {
-                println!("Gateway is not exposed directly to the public Internet, i.e. it itself has a private IP address.");
+            (_, Event::Upnp(upnp::Event::NonRoutableGateway)) => {
+                error!("Gateway is not exposed directly to the public Internet, i.e. it itself has a private IP address.");
                 break;
             }
-            Event::Upnp(ev) => info!("{ev:?}"),
-            Event::Gossipsub(gossipsub::Event::Message {
-                propagation_source,
-                message,
-                ..
-            }) => {
+            (_, Event::Upnp(ev)) => info!("{ev:?}"),
+            (
+                Phase::WaitingForParticipants,
+                Event::Gossipsub(gossipsub::Event::Message {
+                    propagation_source,
+                    message,
+                    ..
+                }),
+            ) => {
                 let Ok(msg) = bincode::deserialize::<Msg>(&message.data) else {
                     error!("Received invalid message from {propagation_source}");
                     continue;
                 };
                 match msg {
-                    Msg::Join(peer_id, name, addr) if is_leader => {
-                        println!("{peer_id} - {name}");
-                        participants.insert(peer_id, (name, addr));
-                        let msg = Msg::Participants(participants.clone()).serialize()?;
-                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
-                        {
-                            error!("Could not publish to gossipsub: {e:?}");
+                    Msg::Join(peer_id, name, addr) => {
+                        if is_leader {
+                            println!("{peer_id} - {name}");
+                            participants.insert(peer_id, (name, addr));
+                            let msg = Msg::Participants(participants.clone()).serialize()?;
+                            if let Err(e) =
+                                swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
+                            {
+                                error!("Could not publish to gossipsub: {e:?}");
+                            }
                         }
                     }
-                    Msg::Join(_, _, _) => {}
                     Msg::Participants(all_participants) => {
                         for (peer_id, (name, _)) in all_participants.iter() {
                             if !participants.contains_key(&peer_id) {
@@ -205,21 +211,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                         participants = all_participants;
                     }
-                    Msg::LobbyNowClosed if !is_leader => {
-                        if participants.len() < 3 {
+                    Msg::LobbyNowClosed => {
+                        if is_leader {
+                            error!("This message should never be sent to the benchmark leader!");
+                        } else if participants.len() < 3 {
                             eprintln!("Someone tried to start a benchmark with < 3 participants!");
                             std::process::exit(1);
+                        } else {
+                            phase = Phase::ConfirmingParticipants;
+                            println!("");
+                            println!("{confirm_msg}");
                         }
-                        phase = Phase::ConfirmingParticipants;
-                        println!("");
-                        println!("{confirm_msg}");
-                    }
-                    Msg::LobbyNowClosed => {
-                        error!("This message should never be sent to the benchmark leader!");
                     }
                 }
             }
-            Event::Gossipsub(ev) => info!("{ev:?}"),
+            (_, Event::Gossipsub(ev)) => info!("{ev:?}"),
         }
     }
     Ok(())

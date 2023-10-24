@@ -16,7 +16,7 @@ use rsa::{
     Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, error::Error, path::PathBuf, time::Duration};
+use std::{collections::{HashMap, BTreeMap}, error::Error, path::PathBuf, time::Duration};
 use tokio::{
     fs,
     io::{self, AsyncBufReadExt},
@@ -92,7 +92,7 @@ enum Msg {
         share: Vec<u8>,
     },
     Sum(PublicKey, HashMap<String, i64>),
-    Result(HashMap<String, i64>),
+    Result(BTreeMap<String, i64>),
 }
 
 impl Msg {
@@ -308,7 +308,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .publish(topic.clone(), msg)?;
             }
             if is_leader && sums.len() == participants.len() {
-                let mut results = HashMap::new();
+                let mut results = BTreeMap::new();
                 for s in sums.values() {
                     for (key, s) in s {
                         let result: i64 = results.get(key).copied().unwrap_or_default();

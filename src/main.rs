@@ -11,7 +11,7 @@ use rsa::signature::Verifier;
 use rsa::{pkcs1v15::VerifyingKey, signature::RandomizedSigner};
 use rsa::{
     pkcs1v15::{Signature, SigningKey},
-    pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding},
+    pkcs8::{DecodePublicKey, EncodePublicKey, LineEnding},
     sha2::Sha256,
     Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
 };
@@ -24,7 +24,37 @@ use tokio::{
 
 const KEY_BITS: usize = 2048;
 
-type PublicKey = String;
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+struct PublicKey(String);
+
+impl std::fmt::Display for PublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hash = blake3::hash(self.0.as_bytes());
+        let bytes = hash.as_bytes();
+        let h1 = u32::from_le_bytes(<[u8; 4]>::try_from(&bytes[0..4]).unwrap());
+        let h2 = u32::from_le_bytes(<[u8; 4]>::try_from(&bytes[4..8]).unwrap());
+        let h3 = u32::from_le_bytes(<[u8; 4]>::try_from(&bytes[8..12]).unwrap());
+        let h4 = u32::from_le_bytes(<[u8; 4]>::try_from(&bytes[12..16]).unwrap());
+        write!(f, "{:08x} {:08x} {:08x} {:08x}", h1, h2, h3, h4)
+    }
+}
+
+impl From<RsaPublicKey> for PublicKey {
+    fn from(key: RsaPublicKey) -> Self {
+        Self(
+            key.to_public_key_pem(LineEnding::default())
+                .expect("Could not serialize public key"),
+        )
+    }
+}
+
+impl TryFrom<&PublicKey> for RsaPublicKey {
+    type Error = String;
+
+    fn try_from(key: &PublicKey) -> Result<Self, Self::Error> {
+        RsaPublicKey::from_public_key_pem(&key.0).map_err(|e| format!("Not a valid pub key: {e}"))
+    }
+}
 
 /// Peer-to-peer benchmarking against group average without disclosing inputs
 #[derive(Parser, Debug)]
@@ -85,19 +115,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         value: secret_value,
     } = Args::parse();
 
-    // let my_key = identity::Keypair::generate_ed25519();
-    // let my_peer_id = PeerId::from(my_key.public());
-    let mut rng = rand::thread_rng();
-    let private_key = RsaPrivateKey::new(&mut rng, KEY_BITS).expect("failed to generate a key");
-    let public_key = RsaPublicKey::from(&private_key);
-    // let my_priv_key = private_key
-    //     .to_pkcs8_pem(LineEnding::default())
-    //     .expect("could not serialize private key");
-    let my_pub_key = public_key
-        .to_public_key_pem(LineEnding::default())
-        .expect("could not serialize public key");
-    let signing_key = SigningKey::<Sha256>::new(private_key.clone());
-    // let mut swarm = libp2p::SwarmBuilder::with_existing_identity(my_key.clone())
     let mut swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
         .with_tcp(
@@ -128,8 +145,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(addr) = &address {
         let remote: Multiaddr = addr.parse()?;
         swarm.dial(remote)?;
-        println!("Joined session at {addr}");
+        println!("Joining session at {addr}...");
     }
+
+    println!("Generating public/private key pair...");
+    let mut rng = rand::thread_rng();
+    let private_key = RsaPrivateKey::new(&mut rng, KEY_BITS).expect("failed to generate a key");
+    let signing_key = SigningKey::<Sha256>::new(private_key.clone());
+    let pub_key = PublicKey::from(RsaPublicKey::from(&private_key));
 
     let mut phase = Phase::WaitingForParticipants;
     let mut stdin = io::BufReader::new(io::stdin()).lines();
@@ -143,7 +166,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         StdIn(String),
         Msg(Msg),
     }
-    let confirm_msg = "Please double-check the public keys of your peers. Do you want to join the benchmark? [Y/n]";
+    let confirm_msg = "Please double-check the participants. Do you want to join the benchmark? [Y/n]";
     let starting_msg = "Starting benchmark with the current participants...";
     loop {
         if let Phase::SendingShares = phase {
@@ -152,12 +175,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             if sent_shares.is_empty() {
                 for public_key in participants.keys() {
-                    if *public_key == my_pub_key.clone() {
+                    if *public_key == pub_key.clone() {
                         continue;
                     }
                     let share: u64 = rand::random();
-                    let receiver_public_key = RsaPublicKey::from_public_key_pem(public_key)
-                        .map_err(|e| format!("Not a valid participant pub key: {e}"))?;
+                    let receiver_public_key = RsaPublicKey::try_from(public_key)?;
 
                     let mut encrypted_share = receiver_public_key
                         .encrypt(&mut rng, Pkcs1v15Encrypt, &share.to_be_bytes())
@@ -172,7 +194,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     sent_shares.insert(public_key.clone(), share.clone());
                     let msg = Msg::Share {
                         to: public_key.clone(),
-                        from: my_pub_key.clone(),
+                        from: pub_key.clone(),
                         share: encrypted_share,
                     }
                     .serialize()?;
@@ -196,8 +218,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let signature = Signature::try_from(signature)
                         .map_err(|e| format!("Not a valid signature: {e}"))?;
 
-                    let pub_key_sender = RsaPublicKey::from_public_key_pem(&sender_pub_key)
-                        .map_err(|e| format!("Not a valid sender pub key: {e}"))?;
+                    let pub_key_sender = RsaPublicKey::try_from(sender_pub_key)?;
                     let verifying_key = VerifyingKey::<Sha256>::new(pub_key_sender);
 
                     verifying_key
@@ -212,9 +233,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     public_sum = public_sum.wrapping_add(received_share);
                 }
 
-                let msg = Msg::Sum(my_pub_key.clone(), public_sum).serialize()?;
+                let msg = Msg::Sum(pub_key.clone(), public_sum).serialize()?;
                 if is_leader {
-                    sums.insert(my_pub_key.clone(), public_sum);
+                    sums.insert(pub_key.clone(), public_sum);
                 }
                 swarm
                     .behaviour_mut()
@@ -255,7 +276,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         continue;
                     };
                     if let Msg::Share { from, to, share } = msg.clone() {
-                        if to == my_pub_key.clone() {
+                        if to == pub_key.clone() {
                             if participants.contains_key(&from) {
                                 received_shares.insert(from, share);
                             }
@@ -272,7 +293,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match (phase, ev) {
             (Phase::WaitingForParticipants, Event::StdIn(_)) if is_leader => {
                 if participants.len() < 3 {
-                    println!("Cannot start yet, at least 3 participants are needed to ensure that inputs remain private.");
+                    println!("Cannot start yet, at least 3 participants are needed to ensure privacy.");
                     continue;
                 }
                 println!("{starting_msg}");
@@ -304,19 +325,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     );
                     println!("");
                     println!("-- Participants --");
-                    println!("{my_pub_key} - {name}");
+                    println!("{pub_key} - {name}");
                 } else {
-                    let msg = Msg::Join(my_pub_key.clone(), name.clone()).serialize()?;
+                    let msg = Msg::Join(pub_key.clone(), name.clone()).serialize()?;
                     swarm
                         .behaviour_mut()
                         .gossipsub
                         .publish(topic.clone(), msg)?;
                     println!("");
                     println!("-- Participants --");
-                    println!("{my_pub_key} - {name}");
+                    println!("{pub_key} - {name}");
                 }
                 swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
-                participants.insert(my_pub_key.clone(), name.clone());
+                participants.insert(pub_key.clone(), name.clone());
             }
             (_, Event::Upnp(upnp::Event::GatewayNotFound)) => {
                 error!("Gateway does not support UPnP");

@@ -6,9 +6,14 @@ use libp2p::{
     upnp, yamux, Multiaddr,
 };
 use log::{error, info};
+use rsa::signature::SignatureEncoding;
+use rsa::signature::Verifier;
+use rsa::{pkcs1v15::VerifyingKey, signature::RandomizedSigner};
 use rsa::{
-    pkcs8::{EncodePublicKey, LineEnding},
-    RsaPrivateKey, RsaPublicKey,
+    pkcs1v15::{Signature, SigningKey},
+    pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding},
+    sha2::Sha256,
+    Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, error::Error, time::Duration};
@@ -52,7 +57,7 @@ enum Msg {
     Share {
         from: PublicKey,
         to: PublicKey,
-        share: u64,
+        share: Vec<u8>,
     },
     Sum(PublicKey, u64),
     Result(f64),
@@ -83,10 +88,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // let my_key = identity::Keypair::generate_ed25519();
     // let my_peer_id = PeerId::from(my_key.public());
     let mut rng = rand::thread_rng();
-    let my_priv_key = RsaPrivateKey::new(&mut rng, KEY_BITS).expect("failed to generate a key");
-    let my_pub_key = RsaPublicKey::from(&my_priv_key)
+    let private_key = RsaPrivateKey::new(&mut rng, KEY_BITS).expect("failed to generate a key");
+    let public_key = RsaPublicKey::from(&private_key);
+    // let my_priv_key = private_key
+    //     .to_pkcs8_pem(LineEnding::default())
+    //     .expect("could not serialize private key");
+    let my_pub_key = public_key
         .to_public_key_pem(LineEnding::default())
         .expect("could not serialize public key");
+    let signing_key = SigningKey::<Sha256>::new(private_key.clone());
     // let mut swarm = libp2p::SwarmBuilder::with_existing_identity(my_key.clone())
     let mut swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
@@ -125,7 +135,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut stdin = io::BufReader::new(io::stdin()).lines();
     let mut participants = HashMap::<PublicKey, String>::new();
     let mut sent_shares = HashMap::<PublicKey, u64>::new();
-    let mut received_shares = HashMap::<PublicKey, u64>::new();
+    let mut received_shares = HashMap::<PublicKey, Vec<u8>>::new();
     let mut sums = HashMap::<PublicKey, u64>::new();
     let mut result = None;
     enum Event {
@@ -145,12 +155,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     if *public_key == my_pub_key.clone() {
                         continue;
                     }
-                    let share = rand::random();
-                    sent_shares.insert(public_key.clone(), share);
+                    let share: u64 = rand::random();
+                    let receiver_public_key = RsaPublicKey::from_public_key_pem(public_key)
+                        .map_err(|e| format!("Not a valid participant pub key: {e}"))?;
+
+                    let mut encrypted_share = receiver_public_key
+                        .encrypt(&mut rng, Pkcs1v15Encrypt, &share.to_be_bytes())
+                        .map_err(|e| format!("failed to encrypt: {e}"))?;
+
+                    let signature = signing_key
+                        .sign_with_rng(&mut rng, &encrypted_share)
+                        .to_vec();
+
+                    encrypted_share.extend(signature);
+
+                    sent_shares.insert(public_key.clone(), share.clone());
                     let msg = Msg::Share {
                         to: public_key.clone(),
                         from: my_pub_key.clone(),
-                        share,
+                        share: encrypted_share,
                     }
                     .serialize()?;
                     swarm
@@ -161,14 +184,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             if received_shares.len() == participants.len() - 1 {
                 let mut sent_sum: u64 = 0;
-                for sent in sent_shares.values() {
-                    sent_sum = sent_sum.wrapping_add(*sent);
+                for share in sent_shares.values() {
+                    sent_sum = sent_sum.wrapping_add(*share);
                 }
                 let masked_secret: u64 = secret_value.wrapping_sub(sent_sum);
                 let mut public_sum = masked_secret;
-                for received in received_shares.values() {
-                    public_sum = public_sum.wrapping_add(*received);
+
+                for (sender_pub_key, encrypted_share) in &received_shares {
+                    let share = &encrypted_share[..256];
+                    let signature = &encrypted_share[256..];
+                    let signature = Signature::try_from(signature)
+                        .map_err(|e| format!("Not a valid signature: {e}"))?;
+
+                    let pub_key_sender = RsaPublicKey::from_public_key_pem(&sender_pub_key)
+                        .map_err(|e| format!("Not a valid sender pub key: {e}"))?;
+                    let verifying_key = VerifyingKey::<Sha256>::new(pub_key_sender);
+
+                    verifying_key
+                        .verify(&share, &signature)
+                        .map_err(|e| format!("Verification of msg sender failed: {e}"))?;
+
+                    let decrypted_msg = private_key
+                        .decrypt(Pkcs1v15Encrypt, &share)
+                        .map_err(|e| format!("failed to decrypt: {e}"))?;
+                    let received_bytes: &[u8] = &decrypted_msg;
+                    let received_share = u64::from_be_bytes(received_bytes.try_into().unwrap());
+                    public_sum = public_sum.wrapping_add(received_share);
                 }
+
                 let msg = Msg::Sum(my_pub_key.clone(), public_sum).serialize()?;
                 if is_leader {
                     sums.insert(my_pub_key.clone(), public_sum);

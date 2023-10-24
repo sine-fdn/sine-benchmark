@@ -91,8 +91,8 @@ enum Msg {
         to: PublicKey,
         share: Vec<u8>,
     },
-    Sum(PublicKey, HashMap<String, i64>),
-    Result(BTreeMap<String, i64>),
+    Sum(PublicKey, HashMap<String, f64>),
+    Result(BTreeMap<String, f64>),
 }
 
 impl Msg {
@@ -126,10 +126,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("Could not read file {}: {}", input.display(), e);
             std::process::exit(1);
         }
-        Ok(file) => match serde_json::from_str::<HashMap<String, i64>>(&file) {
+        Ok(file) => match serde_json::from_str::<HashMap<String, f64>>(&file) {
             Ok(json) => json,
             Err(_) => {
-                eprintln!("The file {} is not a valid JSON file with a map of string keys and integer number values.", input.display());
+                eprintln!("The file {} is not a valid JSON file with a map of string keys and float number values.", input.display());
                 std::process::exit(1);
             }
         },
@@ -177,9 +177,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut phase = Phase::WaitingForParticipants;
     let mut stdin = io::BufReader::new(io::stdin()).lines();
     let mut participants = HashMap::<PublicKey, String>::new();
-    let mut sent_shares = HashMap::<PublicKey, HashMap<&String, i64>>::new();
+    let mut sent_shares = HashMap::<PublicKey, HashMap<&String, f64>>::new();
     let mut received_shares = HashMap::<PublicKey, Vec<u8>>::new();
-    let mut sums = HashMap::<PublicKey, HashMap<String, i64>>::new();
+    let mut sums = HashMap::<PublicKey, HashMap<String, f64>>::new();
     let mut result = None;
     enum Event {
         Upnp(upnp::Event),
@@ -202,7 +202,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let mut msg = vec![];
                     let mut shares = HashMap::new();
                     for key in input.keys() {
-                        let share: i64 = rand::random();
+                        let share: f64 = rand::random();
                         shares.insert(key, share);
 
                         let mut chunk = [0u8; MAX_MSG_SIZE_BYTES];
@@ -245,17 +245,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             if received_shares.len() == participants.len() - 1 {
-                let mut sent_sums: HashMap<&String, i64> = HashMap::new();
+                let mut sent_sums: HashMap<&String, f64> = HashMap::new();
                 for share in sent_shares.values() {
                     for (key, share) in share.iter() {
-                        let sent_sum: i64 = sent_sums.get(*key).copied().unwrap_or_default();
-                        *sent_sums.entry(key).or_default() = sent_sum.wrapping_add(*share);
+                        let sent_sum: f64 = sent_sums.get(*key).copied().unwrap_or_default();
+                        *sent_sums.entry(key).or_default() = sent_sum + *share;
                     }
                 }
                 let mut public_sums = HashMap::new();
                 for (key, sent_sum) in sent_sums {
                     let secret_value = input.get(key).unwrap();
-                    let masked_secret: i64 = secret_value.wrapping_sub(sent_sum);
+                    let masked_secret: f64 = secret_value - sent_sum;
                     public_sums.insert(key.clone(), masked_secret);
                 }
                 for (sender_pub_key, enc_msg) in &received_shares {
@@ -286,11 +286,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             eprintln!("Invalid length of key: {key_len} bytes");
                             std::process::exit(1);
                         }
-                        let share = i64::from_be_bytes(chunk[8..16].try_into().unwrap());
+                        let share = f64::from_be_bytes(chunk[8..16].try_into().unwrap());
                         let key = String::from_utf8(chunk[16..16 + key_len].to_vec())
                             .map_err(|e| format!("Not a valid UTF-8 string: {e}"))?;
                         if let Some(public_sum) = public_sums.get_mut(&key) {
-                            *public_sum = public_sum.wrapping_add(share);
+                            *public_sum = *public_sum + share;
                         } else {
                             eprintln!("Received invalid key {key} from one of the participants!");
                             std::process::exit(1);
@@ -311,8 +311,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 let mut results = BTreeMap::new();
                 for s in sums.values() {
                     for (key, s) in s {
-                        let result: i64 = results.get(key).copied().unwrap_or_default();
-                        *results.entry(key.clone()).or_default() = result.wrapping_add(*s);
+                        let result: f64 = results.get(key).copied().unwrap_or_default();
+                        *results.entry(key.clone()).or_default() = result + s;
                     }
                 }
                 let msg = Msg::Result(results.clone()).serialize()?;

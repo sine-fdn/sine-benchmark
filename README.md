@@ -14,6 +14,7 @@ SINE Benchmark is a privacy preserving benchmarking CLI tool. This is achieved b
 
 The protocol used in SINE Benchmark can be illustrated by this simple example:
 
+<img width="1670" alt="MPC" src="https://github.com/sine-fdn/sine-benchmark/assets/100690574/10619fc4-7f21-4127-8d29-2f5714203020">
 
 The CLI tool takes a set of values (defined in a json to be provided by the user) and for each of the values generates a number of random shares identical to the number of other participants.
 
@@ -49,40 +50,40 @@ To start a benchmarking session, you will need:
 
 To start a benchmarking session, run:
 
-    ```sh
-        cargo run -- --name=<your-name> --input=<file.json>
-    ```
+```sh
+cargo run -- --name=<your-name> --input=<file.json>
+```
 
 You are now the `benchmark leader` and will get the following prompt:
 
-    ```sh
-        Generating public/private key pair...
-        A new session has been started, others can join using the following command:
-        cargo run -- --address=ip4/<xx>.<xxx>.<xx>.<xxx>/tcp/<xxxxx> --name=<your_alias> --input=<file.json>
-    ```
+```sh
+Generating public/private key pair...
+A new session has been started, others can join using the following command:
+cargo run -- --address=ip4/<xx>.<xxx>.<xx>.<xxx>/tcp/<xxxxx> --name=<your_alias> --input=<file.json>
+```
 
 Communicate your address to other participants by copying the command above (or only the part concerning the address) an sending it to them. They will then be able to join the session.
 
 To join an ongoing session, run:
 
-    ```sh
-        cargo run -- --address=/ip4/<xx>.<xxx>.<xx>.<xxx>/tcp/<xxxxx> --name=<your-name> --input=<file.json>
-    ```
+```sh
+cargo run -- --address=/ip4/<xx>.<xxx>.<xx>.<xxx>/tcp/<xxxxx> --name=<your-name> --input=<file.json>
+```
 
 **Note:** The input files of all participants should have the exact same keys.
 
 As participants join, everyone will be able to see the list of participants, indicating their hashed key and their name, e.g.:
-    ```sh
-        e162c856 416cb0a9 c78155eb b8d3c9dd - foo
-        271270ba 7d268105 9ae5e96e 23b8f7e4 - bar
-        25431517 e42910b2 e359702e 20c61f49 - baz
-    ```
+```sh
+e162c856 416cb0a9 c78155eb b8d3c9dd - foo
+271270ba 7d268105 9ae5e96e 23b8f7e4 - bar
+25431517 e42910b2 e359702e 20c61f49 - baz
+```
 
 Once all participants have joined, the `benchmark leader` can hit `Enter` to begin the benchmark. At that point, other participants will receive the following prompt:
 
-    ```sh
-        Please double-check the participants. Do you want to join the benchmark? [Y/n]
-    ```
+```sh
+Please double-check the participants. Do you want to join the benchmark? [Y/n]
+```
 
 Checking the participant hashed keys is very important to ensure that no man-in-the-middle attack is taking place.
 

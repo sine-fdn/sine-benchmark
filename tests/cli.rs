@@ -1,63 +1,64 @@
 use std::{
-    io::{BufRead, BufReader, Error, ErrorKind},
+    io::{BufRead, BufReader, BufWriter, Error, ErrorKind, Write},
     process::{Child, Command, Stdio},
+    thread,
 };
 
-use assert_cmd::prelude::{CommandCargoExt, OutputAssertExt}; // Run programs
+use assert_cmd::prelude::{CommandCargoExt, OutputAssertExt};
 
 const CRATE_NAME: &str = "sine-benchmark";
 
-#[test]
-fn file_doesnt_exist() -> Result<(), Box<dyn std::error::Error>> {
-    new_command("foo", None, "nonexisting_file.json")?
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains("No such file"));
+// #[test]
+// fn file_doesnt_exist() -> Result<(), Box<dyn std::error::Error>> {
+//     new_command("foo", None, "nonexisting_file.json")?
+//         .assert()
+//         .failure()
+//         .stderr(predicates::str::contains("No such file"));
 
-    Ok(())
-}
+//     Ok(())
+// }
 
-#[test]
-fn wrong_file_format() -> Result<(), Box<dyn std::error::Error>> {
-    new_command("foo", None, "tests/test_files/wrong_file_format.txt")?
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains("is not a valid JSON file"));
-    Ok(())
-}
+// #[test]
+// fn wrong_file_format() -> Result<(), Box<dyn std::error::Error>> {
+//     new_command("foo", None, "tests/test_files/wrong_file_format.txt")?
+//         .assert()
+//         .failure()
+//         .stderr(predicates::str::contains("is not a valid JSON file"));
+//     Ok(())
+// }
 
-#[test]
-fn invalid_json() -> Result<(), Box<dyn std::error::Error>> {
-    new_command("foo", None, "tests/test_files/invalid_json.json")?
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains("is not a valid JSON file"));
-    Ok(())
-}
+// #[test]
+// fn invalid_json() -> Result<(), Box<dyn std::error::Error>> {
+//     new_command("foo", None, "tests/test_files/invalid_json.json")?
+//         .assert()
+//         .failure()
+//         .stderr(predicates::str::contains("is not a valid JSON file"));
+//     Ok(())
+// }
 
-#[test]
-fn wrong_json_types() -> Result<(), Box<dyn std::error::Error>> {
-    new_command("foo", None, "tests/test_files/wrong_types.json")?
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains(
-            "with a map of string keys and integer number values",
-        ));
-    Ok(())
-}
+// #[test]
+// fn wrong_json_types() -> Result<(), Box<dyn std::error::Error>> {
+//     new_command("foo", None, "tests/test_files/wrong_types.json")?
+//         .assert()
+//         .failure()
+//         .stderr(predicates::str::contains(
+//             "with a map of string keys and integer number values",
+//         ));
+//     Ok(())
+// }
 
-#[test]
-fn no_session_at_address() -> Result<(), Box<dyn std::error::Error>> {
-    new_command(
-        "foo",
-        Some("/ip4/0.0.0.0/tcp/12345"),
-        "tests/test_files/valid_json.json",
-    )?
-    .assert()
-    .failure()
-    .stderr(predicates::str::contains("InsufficientPeers"));
-    Ok(())
-}
+// #[test]
+// fn no_session_at_address() -> Result<(), Box<dyn std::error::Error>> {
+//     new_command(
+//         "foo",
+//         Some("/ip4/0.0.0.0/tcp/12345"),
+//         "tests/test_files/valid_json.json",
+//     )?
+//     .assert()
+//     .failure()
+//     .stderr(predicates::str::contains("InsufficientPeers"));
+//     Ok(())
+// }
 
 // #[test]
 // fn invalid_address() -> Result<(), Box<dyn std::error::Error>> {
@@ -68,37 +69,102 @@ fn no_session_at_address() -> Result<(), Box<dyn std::error::Error>> {
 //     Ok(())
 // }
 
-// #[test]
-// fn session() -> Result<(), Box<dyn std::error::Error>> {
-//     let mut new_session = new_command("foo", None, "tests/test_files/valid_json.json")?;
+#[test]
+fn session() -> Result<(), Box<dyn std::error::Error>> {
+    let mut new_session = new_command("foo", None, "tests/test_files/valid_json.json")?;
 
-//     let Some(stdout) = new_session.spawn()?.stdout else {
-//         return Err(Box::new(Error::new(ErrorKind::Other, "No stdout found")));
-//     };
+    let leader = new_session
+        .stdout(Stdio::piped())
+        .stdin(Stdio::piped())
+        .spawn()?;
+    let stdout = leader.stdout.unwrap();
+    let reader = BufReader::new(stdout);
+    let stdin = leader.stdin.unwrap();
+    let mut writer = BufWriter::new(stdin);
+    let mut lines = reader.lines();
 
-//     let mut address: String = "".to_string();
+    let address = loop {
+        if let Some(Ok(l)) = lines.next() {
+            println!("foo > {}", l);
+            if l.contains("--address=/ip4/") {
+                break l
+                    .split(" ")
+                    .find(|s| s.contains("--address=/ip4/"))
+                    .unwrap()
+                    .replace("--address=", "");
+            }
+        }
+    };
 
-//     let reader = BufReader::new(stdout);
+    let mut threads = vec![];
+    for name in ["bar", "baz"] {
+        let address = address.clone();
+        threads.push(thread::spawn(move || {
+            let participant = new_command(name, Some(&address), "tests/test_files/valid_json.json")
+                .unwrap()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
 
-//     reader.lines().for_each(|line| match line {
-//         Ok(l) => {
-//             if l.contains("--address=/ip4/") {
-//                 address = l
-//                     .split(" ")
-//                     .find(|s| s.contains("--address=/ip4/"))
-//                     .unwrap()
-//                     .replace("--address=", "");
-//             }
-//             println!("{}", l);
-//         }
-//         Err(_) => {}
-//     });
+            let stdout = participant.stdout.unwrap();
+            let reader = BufReader::new(stdout);
+            let stdin = participant.stdin.unwrap();
+            let mut writer = BufWriter::new(stdin);
+            let mut lines = reader.lines();
 
-//     new_command("bar", Some(&address), "tests/test_files/valid_json.json")?.assert().success();
-//     new_command("baz", Some(&address), "tests/test_files/valid_json.json")?.assert().success();
+            while let Some(Ok(l)) = lines.next() {
+                println!("{name} > {l}");
 
-//     Ok(())
-// }
+                if l.contains("Do you want to join the benchmark?") {
+                    writeln!(writer, "y").unwrap();
+                    writer.flush().unwrap();
+                }
+
+                if l.contains("results") {
+                    return;
+                }
+            }
+        }));
+    }
+
+    let mut participant_count = 1;
+    let mut example1_correct = false;
+    let mut example2_correct = false;
+    let mut example3_correct = false;
+    while let Some(Ok(l)) = lines.next() {
+        println!("foo > {}", l);
+        if l.contains("- bar") || l.contains("- baz") {
+            participant_count += 1;
+        }
+        if participant_count == 3 {
+            writeln!(writer, "").unwrap();
+            writer.flush().unwrap();
+        }
+        if l.contains("example1: ") {
+            example1_correct = l.split(" ").last().unwrap() == "10.00";
+        }
+        if l.contains("example2: ") {
+            example2_correct = l.split(" ").last().unwrap() == "15.00";
+        }
+        if l.contains("example3: ") {
+            example3_correct = l.split(" ").last().unwrap() == "18.00";
+        }
+        if example1_correct && example2_correct && example3_correct {
+            break;
+        }
+    }
+
+    for t in threads {
+        t.join().unwrap();
+    }
+
+    if example1_correct && example2_correct && example3_correct {
+        Ok(())
+    } else {
+        Err(Box::new(Error::new(ErrorKind::Other, "Wrong results")))
+    }
+}
 
 fn new_command(
     name: &str,

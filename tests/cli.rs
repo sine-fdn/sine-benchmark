@@ -1,73 +1,74 @@
 use std::{
     io::{BufRead, BufReader, BufWriter, Error, ErrorKind, Write},
-    process::{Child, Command, Stdio},
-    thread::{self, sleep}, time::Duration,
+    process::{Command, Stdio},
+    thread::{self, sleep},
+    time::Duration,
 };
 
 use assert_cmd::prelude::{CommandCargoExt, OutputAssertExt};
 
 const CRATE_NAME: &str = "sine-benchmark";
 
-// #[test]
-// fn file_doesnt_exist() -> Result<(), Box<dyn std::error::Error>> {
-//     new_command("foo", None, "nonexisting_file.json")?
-//         .assert()
-//         .failure()
-//         .stderr(predicates::str::contains("No such file"));
+#[test]
+fn file_doesnt_exist() -> Result<(), Box<dyn std::error::Error>> {
+    new_command("foo", None, "nonexisting_file.json")?
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("No such file"));
 
-//     Ok(())
-// }
+    Ok(())
+}
 
-// #[test]
-// fn wrong_file_format() -> Result<(), Box<dyn std::error::Error>> {
-//     new_command("foo", None, "tests/test_files/wrong_file_format.txt")?
-//         .assert()
-//         .failure()
-//         .stderr(predicates::str::contains("is not a valid JSON file"));
-//     Ok(())
-// }
+#[test]
+fn wrong_file_format() -> Result<(), Box<dyn std::error::Error>> {
+    new_command("foo", None, "tests/test_files/wrong_file_format.txt")?
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("is not a valid JSON file"));
+    Ok(())
+}
 
-// #[test]
-// fn invalid_json() -> Result<(), Box<dyn std::error::Error>> {
-//     new_command("foo", None, "tests/test_files/invalid_json.json")?
-//         .assert()
-//         .failure()
-//         .stderr(predicates::str::contains("is not a valid JSON file"));
-//     Ok(())
-// }
+#[test]
+fn invalid_json() -> Result<(), Box<dyn std::error::Error>> {
+    new_command("foo", None, "tests/test_files/invalid_json.json")?
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("is not a valid JSON file"));
+    Ok(())
+}
 
-// #[test]
-// fn wrong_json_types() -> Result<(), Box<dyn std::error::Error>> {
-//     new_command("foo", None, "tests/test_files/wrong_types.json")?
-//         .assert()
-//         .failure()
-//         .stderr(predicates::str::contains(
-//             "with a map of string keys and integer number values",
-//         ));
-//     Ok(())
-// }
+#[test]
+fn wrong_json_types() -> Result<(), Box<dyn std::error::Error>> {
+    new_command("foo", None, "tests/test_files/wrong_types.json")?
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "with a map of string keys and integer number values",
+        ));
+    Ok(())
+}
 
-// #[test]
-// fn no_session_at_address() -> Result<(), Box<dyn std::error::Error>> {
-//     new_command(
-//         "foo",
-//         Some("/ip4/0.0.0.0/tcp/12345"),
-//         "tests/test_files/valid_json.json",
-//     )?
-//     .assert()
-//     .failure()
-//     .stderr(predicates::str::contains("InsufficientPeers"));
-//     Ok(())
-// }
+#[test]
+fn no_session_at_address() -> Result<(), Box<dyn std::error::Error>> {
+    new_command(
+        "foo",
+        Some("/ip4/0.0.0.0/tcp/12345"),
+        "tests/test_files/valid_json.json",
+    )?
+    .assert()
+    .failure()
+    .stderr(predicates::str::contains("InsufficientPeers"));
+    Ok(())
+}
 
-// #[test]
-// fn invalid_address() -> Result<(), Box<dyn std::error::Error>> {
-//     new_command("foo", Some("bar"), "tests/test_files/valid_json.json")?
-//         .assert()
-//         .failure()
-//         .stderr(predicates::str::contains("InvalidMultiaddr"));
-//     Ok(())
-// }
+#[test]
+fn invalid_address() -> Result<(), Box<dyn std::error::Error>> {
+    new_command("foo", Some("bar"), "tests/test_files/valid_json.json")?
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("InvalidMultiaddr"));
+    Ok(())
+}
 
 #[test]
 fn session() -> Result<(), Box<dyn std::error::Error>> {
@@ -100,12 +101,13 @@ fn session() -> Result<(), Box<dyn std::error::Error>> {
     for name in ["bar", "baz"] {
         let address = address.clone();
         threads.push(thread::spawn(move || {
-            let mut participant = new_command(name, Some(&address), "tests/test_files/valid_json.json")
-                .unwrap()
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .spawn()
-                .unwrap();
+            let mut participant =
+                new_command(name, Some(&address), "tests/test_files/valid_json.json")
+                    .unwrap()
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .unwrap();
 
             let stdout = participant.stdout.take().unwrap();
             let reader = BufReader::new(stdout);

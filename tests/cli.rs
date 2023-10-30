@@ -1,7 +1,7 @@
 use std::{
     io::{BufRead, BufReader, BufWriter, Error, ErrorKind, Write},
     process::{Child, Command, Stdio},
-    thread,
+    thread::{self, sleep}, time::Duration,
 };
 
 use assert_cmd::prelude::{CommandCargoExt, OutputAssertExt};
@@ -73,13 +73,13 @@ const CRATE_NAME: &str = "sine-benchmark";
 fn session() -> Result<(), Box<dyn std::error::Error>> {
     let mut new_session = new_command("foo", None, "tests/test_files/valid_json.json")?;
 
-    let leader = new_session
+    let mut leader = new_session
         .stdout(Stdio::piped())
         .stdin(Stdio::piped())
         .spawn()?;
-    let stdout = leader.stdout.unwrap();
+    let stdout = leader.stdout.take().unwrap();
     let reader = BufReader::new(stdout);
-    let stdin = leader.stdin.unwrap();
+    let stdin = leader.stdin.take().unwrap();
     let mut writer = BufWriter::new(stdin);
     let mut lines = reader.lines();
 
@@ -100,16 +100,16 @@ fn session() -> Result<(), Box<dyn std::error::Error>> {
     for name in ["bar", "baz"] {
         let address = address.clone();
         threads.push(thread::spawn(move || {
-            let participant = new_command(name, Some(&address), "tests/test_files/valid_json.json")
+            let mut participant = new_command(name, Some(&address), "tests/test_files/valid_json.json")
                 .unwrap()
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .spawn()
                 .unwrap();
 
-            let stdout = participant.stdout.unwrap();
+            let stdout = participant.stdout.take().unwrap();
             let reader = BufReader::new(stdout);
-            let stdin = participant.stdin.unwrap();
+            let stdin = participant.stdin.take().unwrap();
             let mut writer = BufWriter::new(stdin);
             let mut lines = reader.lines();
 
@@ -117,11 +117,13 @@ fn session() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{name} > {l}");
 
                 if l.contains("Do you want to join the benchmark?") {
+                    sleep(Duration::from_millis(200));
                     writeln!(writer, "y").unwrap();
                     writer.flush().unwrap();
                 }
 
                 if l.contains("results") {
+                    participant.kill().unwrap();
                     return;
                 }
             }
@@ -138,6 +140,7 @@ fn session() -> Result<(), Box<dyn std::error::Error>> {
             participant_count += 1;
         }
         if participant_count == 3 {
+            sleep(Duration::from_millis(200));
             writeln!(writer, "").unwrap();
             writer.flush().unwrap();
         }
@@ -154,6 +157,9 @@ fn session() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
     }
+
+    sleep(Duration::from_millis(200));
+    leader.kill()?;
 
     for t in threads {
         t.join().unwrap();

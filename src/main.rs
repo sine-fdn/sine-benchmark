@@ -334,7 +334,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("");
                     println!("Average results:");
                     for (key, result) in results.iter() {
-                        let avg = (*result  as f64 / participants.len() as f64) / 100.00;
+                        let avg = (*result as f64 / participants.len() as f64) / 100.00;
                         println!("{key}: {avg:.2}")
                     }
                     result = Some(results);
@@ -411,7 +411,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if is_leader {
                     println!("A new session has been started, others can join using the following command:");
                     println!(
-                        "cargo run -- --address={addr} --name=<your_alias> --input=<file.json>"
+                        "{} --address={addr} --name=<your_alias> --input=<file.json>",
+                        std::env::args().nth(0).unwrap_or_else(|| "<bin>".into())
                     );
                     println!("");
                     println!(
@@ -501,7 +502,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("");
                     println!("Average results:");
                     for (key, result) in results {
-                        let avg = (result  as f64 / participants.len() as f64) / 100.00;
+                        let avg = (result as f64 / participants.len() as f64) / 100.00;
                         println!("{key}: {avg:.2}")
                     }
                     std::process::exit(0);

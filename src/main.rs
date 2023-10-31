@@ -1,17 +1,36 @@
 use clap::Parser;
 use futures::StreamExt;
 use libp2p::{
-    gossipsub, identity, noise,
+    gossipsub, noise,
     swarm::{NetworkBehaviour, SwarmEvent},
-    upnp, yamux, Multiaddr, PeerId,
+    upnp, yamux, Multiaddr,
 };
 use log::{error, info};
+use rsa::signature::SignatureEncoding;
+use rsa::signature::Verifier;
+use rsa::{pkcs1v15::VerifyingKey, signature::RandomizedSigner};
+use rsa::{
+    pkcs1v15::{Signature, SigningKey},
+    pkcs8::{DecodePublicKey, EncodePublicKey, LineEnding},
+    sha2::Sha256,
+    Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
+};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, error::Error, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    error::Error,
+    path::PathBuf,
+    time::Duration,
+};
 use tokio::{
+    fs,
     io::{self, AsyncBufReadExt},
     select,
+    time::sleep,
 };
+
+const KEY_BITS: usize = 2048;
+const MAX_MSG_SIZE_BYTES: usize = 245;
 
 /// Peer-to-peer benchmarking against group average without disclosing inputs
 #[derive(Parser, Debug)]
@@ -25,9 +44,41 @@ struct Args {
     #[arg(short, long)]
     name: String,
 
-    /// Integer value to benchmark
+    /// JSON file with key-value pairs to benchmark
     #[arg(short, long)]
-    value: u64,
+    input: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+struct PublicKey(String);
+
+impl std::fmt::Display for PublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hash = blake3::hash(self.0.as_bytes());
+        let bytes = hash.as_bytes();
+        let h1 = u32::from_le_bytes(<[u8; 4]>::try_from(&bytes[0..4]).unwrap());
+        let h2 = u32::from_le_bytes(<[u8; 4]>::try_from(&bytes[4..8]).unwrap());
+        let h3 = u32::from_le_bytes(<[u8; 4]>::try_from(&bytes[8..12]).unwrap());
+        let h4 = u32::from_le_bytes(<[u8; 4]>::try_from(&bytes[12..16]).unwrap());
+        write!(f, "{:08x} {:08x} {:08x} {:08x}", h1, h2, h3, h4)
+    }
+}
+
+impl From<RsaPublicKey> for PublicKey {
+    fn from(key: RsaPublicKey) -> Self {
+        Self(
+            key.to_public_key_pem(LineEnding::default())
+                .expect("Could not serialize public key"),
+        )
+    }
+}
+
+impl TryFrom<&PublicKey> for RsaPublicKey {
+    type Error = String;
+
+    fn try_from(key: &PublicKey) -> Result<Self, Self::Error> {
+        RsaPublicKey::from_public_key_pem(&key.0).map_err(|e| format!("Not a valid pub key: {e}"))
+    }
 }
 
 #[derive(NetworkBehaviour)]
@@ -38,16 +89,16 @@ struct MyBehaviour {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Msg {
-    Join(PeerId, String, Multiaddr),
-    Participants(HashMap<PeerId, (String, Multiaddr)>),
+    Join(PublicKey, String),
+    Participants(HashMap<PublicKey, String>),
     LobbyNowClosed,
     Share {
-        from: PeerId,
-        to: PeerId,
-        share: u64,
+        from: PublicKey,
+        to: PublicKey,
+        share: Vec<u8>,
     },
-    Sum(PeerId, u64),
-    Result(f64),
+    Sum(PublicKey, HashMap<String, i64>),
+    Result(BTreeMap<String, i64>),
 }
 
 impl Msg {
@@ -69,12 +120,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let Args {
         address,
         name,
-        value: secret_value,
+        input,
     } = Args::parse();
+    let Ok(_) = fs::metadata(&input).await else {
+        eprintln!("No such file: {}", input.display());
+        eprintln!("The input must be a JSON file with key-value pairs.");
+        std::process::exit(1);
+    };
+    let input = match fs::read_to_string(&input).await {
+        Err(e) => {
+            eprintln!("Could not read file {}: {}", input.display(), e);
+            std::process::exit(1);
+        }
+        Ok(file) => match serde_json::from_str::<HashMap<String, f64>>(&file) {
+            Ok(json) => json,
+            Err(_) => {
+                eprintln!("The file {} is not a valid JSON file with a map of string keys and integer number values.", input.display());
+                std::process::exit(1);
+            }
+        },
+    };
 
-    let my_key = identity::Keypair::generate_ed25519();
-    let my_peer_id = PeerId::from(my_key.public());
-    let mut swarm = libp2p::SwarmBuilder::with_existing_identity(my_key.clone())
+    let mut swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
         .with_tcp(
             Default::default(),
@@ -103,23 +170,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     if let Some(addr) = &address {
         let remote: Multiaddr = addr.parse()?;
-        swarm.dial(remote)?;
-        println!("Joined session at {addr}");
+        println!("Joining session at {addr}...");
+        while let Err(_) = swarm.dial(remote.clone()) {
+            println!("Waiting for session to start at {addr}...");
+            sleep(Duration::from_millis(200)).await;
+        }
     }
+
+    println!("Generating public/private key pair...");
+    let mut rng = rand::thread_rng();
+    let private_key = RsaPrivateKey::new(&mut rng, KEY_BITS).expect("failed to generate a key");
+    let signing_key = SigningKey::<Sha256>::new(private_key.clone());
+    let pub_key = PublicKey::from(RsaPublicKey::from(&private_key));
+    println!("Your public key is: {pub_key}");
 
     let mut phase = Phase::WaitingForParticipants;
     let mut stdin = io::BufReader::new(io::stdin()).lines();
-    let mut participants = HashMap::<PeerId, (String, Multiaddr)>::new();
-    let mut sent_shares = HashMap::<PeerId, u64>::new();
-    let mut received_shares = HashMap::<PeerId, u64>::new();
-    let mut sums = HashMap::<PeerId, u64>::new();
+    let mut participants = HashMap::<PublicKey, String>::new();
+    let mut sent_shares = HashMap::<PublicKey, HashMap<&String, i64>>::new();
+    let mut received_shares = HashMap::<PublicKey, Vec<u8>>::new();
+    let mut sums = HashMap::<PublicKey, HashMap<String, i64>>::new();
     let mut result = None;
     enum Event {
         Upnp(upnp::Event),
         StdIn(String),
         Msg(Msg),
     }
-    let confirm_msg = "Please double-check the peer ids. Do you want to join the benchmark? [Y/n]";
+    let confirm_msg =
+        "Please double-check the participants. Do you want to join the benchmark? [Y/n]";
     let starting_msg = "Starting benchmark with the current participants...";
     loop {
         if let Phase::SendingShares = phase {
@@ -127,16 +205,47 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 std::process::exit(0);
             }
             if sent_shares.is_empty() {
-                for peer_id in participants.keys() {
-                    if *peer_id == my_peer_id {
+                for public_key in participants.keys() {
+                    if *public_key == pub_key.clone() {
                         continue;
                     }
-                    let share = rand::random();
-                    sent_shares.insert(peer_id.clone(), share);
+                    let mut msg = vec![];
+                    let mut shares = HashMap::new();
+                    for key in input.keys() {
+                        let share: i64 = rand::random();
+                        shares.insert(key, share);
+
+                        let mut chunk = [0u8; MAX_MSG_SIZE_BYTES];
+                        let key_len = key.as_bytes().len() as i64;
+                        let max_size = MAX_MSG_SIZE_BYTES - 16;
+                        if (key_len as usize) > MAX_MSG_SIZE_BYTES - 16 {
+                            eprintln!("Key '{key}' ({key_len} bytes) exceeds maximum key size of {max_size} bytes");
+                            std::process::exit(1);
+                        }
+                        chunk[..8].copy_from_slice(&key_len.to_be_bytes());
+                        chunk[8..16].copy_from_slice(&share.to_be_bytes());
+                        chunk[16..16 + (key_len as usize)].copy_from_slice(key.as_bytes());
+
+                        assert_eq!(chunk.len(), MAX_MSG_SIZE_BYTES);
+
+                        let receiver_public_key = RsaPublicKey::try_from(public_key)?;
+
+                        let chunk = receiver_public_key
+                            .encrypt(&mut rng, Pkcs1v15Encrypt, &chunk)
+                            .map_err(|e| format!("failed to encrypt: {e}"))?;
+                        assert_eq!(chunk.len(), KEY_BITS / 8);
+
+                        let signature = signing_key.sign_with_rng(&mut rng, &chunk).to_vec();
+                        assert_eq!(signature.len(), KEY_BITS / 8);
+
+                        msg.extend(chunk);
+                        msg.extend(signature);
+                    }
+                    sent_shares.insert(public_key.clone(), shares);
                     let msg = Msg::Share {
-                        to: peer_id.clone(),
-                        from: my_peer_id,
-                        share,
+                        to: public_key.clone(),
+                        from: pub_key.clone(),
+                        share: msg,
                     }
                     .serialize()?;
                     swarm
@@ -146,18 +255,62 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             if received_shares.len() == participants.len() - 1 {
-                let mut sent_sum: u64 = 0;
-                for sent in sent_shares.values() {
-                    sent_sum = sent_sum.wrapping_add(*sent);
+                let mut sent_sums: HashMap<&String, i64> = HashMap::new();
+                for share in sent_shares.values() {
+                    for (key, share) in share.iter() {
+                        let sent_sum: i64 = sent_sums.get(*key).copied().unwrap_or_default();
+                        *sent_sums.entry(key).or_default() = sent_sum.wrapping_add(*share);
+                    }
                 }
-                let masked_secret: u64 = secret_value.wrapping_sub(sent_sum);
-                let mut public_sum = masked_secret;
-                for received in received_shares.values() {
-                    public_sum = public_sum.wrapping_add(*received);
+                let mut public_sums = HashMap::new();
+                for (key, sent_sum) in sent_sums {
+                    let secret_value = (input.get(key).unwrap() * 100.0).round() as i64;
+                    let masked_secret: i64 = secret_value.wrapping_sub(sent_sum);
+                    public_sums.insert(key.clone(), masked_secret);
                 }
-                let msg = Msg::Sum(my_peer_id, public_sum).serialize()?;
+                for (sender_pub_key, enc_msg) in &received_shares {
+                    let pub_key_sender = RsaPublicKey::try_from(sender_pub_key)?;
+                    let verifying_key = VerifyingKey::<Sha256>::new(pub_key_sender);
+
+                    assert_eq!(enc_msg.len() % ((KEY_BITS / 8) * 2), 0);
+                    for i in (0..enc_msg.len()).step_by((KEY_BITS / 8) * 2) {
+                        if enc_msg.len() < i + (KEY_BITS / 8) * 2 {
+                            eprintln!("Unexpected end of message at offset");
+                            std::process::exit(1);
+                        }
+                        let chunk = &enc_msg[i..i + KEY_BITS / 8];
+                        let signature = &enc_msg[i + KEY_BITS / 8..i + (KEY_BITS / 8) * 2];
+                        let signature = Signature::try_from(signature)
+                            .map_err(|e| format!("Not a valid signature: {e}"))?;
+
+                        verifying_key
+                            .verify(&chunk, &signature)
+                            .map_err(|e| format!("Verification of msg sender failed: {e}"))?;
+
+                        let chunk = private_key
+                            .decrypt(Pkcs1v15Encrypt, &chunk)
+                            .map_err(|e| format!("failed to decrypt: {e}"))?;
+
+                        let key_len = i64::from_be_bytes(chunk[..8].try_into().unwrap()) as usize;
+                        if key_len > chunk.len() - 16 {
+                            eprintln!("Invalid length of key: {key_len} bytes");
+                            std::process::exit(1);
+                        }
+                        let share = i64::from_be_bytes(chunk[8..16].try_into().unwrap());
+                        let key = String::from_utf8(chunk[16..16 + key_len].to_vec())
+                            .map_err(|e| format!("Not a valid UTF-8 string: {e}"))?;
+                        if let Some(public_sum) = public_sums.get_mut(&key) {
+                            *public_sum = public_sum.wrapping_add(share);
+                        } else {
+                            eprintln!("Received invalid key {key} from one of the participants!");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+
+                let msg = Msg::Sum(pub_key.clone(), public_sums.clone()).serialize()?;
                 if is_leader {
-                    sums.insert(my_peer_id, public_sum);
+                    sums.insert(pub_key.clone(), public_sums);
                 }
                 swarm
                     .behaviour_mut()
@@ -165,20 +318,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .publish(topic.clone(), msg)?;
             }
             if is_leader && sums.len() == participants.len() {
-                let mut sum: u64 = 0;
+                let mut results = BTreeMap::new();
                 for s in sums.values() {
-                    sum = sum.wrapping_add(*s);
+                    for (key, s) in s {
+                        let result: i64 = results.get(key).copied().unwrap_or_default();
+                        *results.entry(key.clone()).or_default() = result.wrapping_add(*s);
+                    }
                 }
-                let avg = sum as f64 / participants.len() as f64;
-                let msg = Msg::Result(avg).serialize()?;
+                let msg = Msg::Result(results.clone()).serialize()?;
                 swarm
                     .behaviour_mut()
                     .gossipsub
                     .publish(topic.clone(), msg)?;
                 if result.is_none() {
-                    result = Some(avg);
                     println!("");
-                    println!("The average of the benchmarked values is: {avg:.2}");
+                    println!("Average results:");
+                    for (key, result) in results.iter() {
+                        let avg = (*result  as f64 / participants.len() as f64) / 100.00;
+                        println!("{key}: {avg:.2}")
+                    }
+                    result = Some(results);
                 }
             }
         }
@@ -197,14 +356,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         error!("Received invalid message from {propagation_source}");
                         continue;
                     };
-                    if let Msg::Share { from, to, share } = msg {
-                        if to == my_peer_id {
+                    if let Msg::Share { from, to, share } = msg.clone() {
+                        if to == pub_key.clone() {
                             if participants.contains_key(&from) {
                                 received_shares.insert(from, share);
                             }
                         }
                     }
                     Event::Msg(msg)
+                },
+                SwarmEvent::IncomingConnectionError { .. } => {
+                    eprintln!("Error while establishing incoming connection");
+                    continue;
+                },
+                SwarmEvent::ConnectionClosed { .. } => {
+                    eprintln!("Connection has been closed by one of the participants");
+                    continue;
                 },
                 ev => {
                     info!("{ev:?}");
@@ -215,11 +382,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match (phase, ev) {
             (Phase::WaitingForParticipants, Event::StdIn(_)) if is_leader => {
                 if participants.len() < 3 {
-                    println!("Cannot start yet, at least 3 participants are needed to ensure that inputs remain private.");
+                    println!(
+                        "Cannot start yet, at least 3 participants are needed to ensure privacy."
+                    );
                     continue;
                 }
                 println!("{starting_msg}");
                 phase = Phase::SendingShares;
+                sleep(Duration::from_millis(500)).await;
                 let msg = Msg::LobbyNowClosed.serialize()?;
                 swarm
                     .behaviour_mut()
@@ -240,26 +410,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
             (Phase::WaitingForParticipants, Event::Upnp(upnp::Event::NewExternalAddr(addr))) => {
                 if is_leader {
                     println!("A new session has been started, others can join using the following command:");
-                    println!("cargo run -- --address={addr} --name=alias --value=");
+                    println!(
+                        "cargo run -- --address={addr} --name=<your_alias> --input=<file.json>"
+                    );
                     println!("");
                     println!(
                         "Press ENTER to start the benchmark once all participants have joined."
                     );
                     println!("");
                     println!("-- Participants --");
-                    println!("{my_peer_id} - {name}");
+                    println!("{pub_key} - {name}");
                 } else {
-                    let msg = Msg::Join(my_peer_id, name.clone(), addr.clone()).serialize()?;
+                    let msg = Msg::Join(pub_key.clone(), name.clone()).serialize()?;
                     swarm
                         .behaviour_mut()
                         .gossipsub
                         .publish(topic.clone(), msg)?;
                     println!("");
                     println!("-- Participants --");
-                    println!("{my_peer_id} - {name}");
+                    println!("{pub_key} - {name}");
                 }
                 swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
-                participants.insert(my_peer_id, (name.clone(), addr.clone()));
+                participants.insert(pub_key.clone(), name.clone());
             }
             (_, Event::Upnp(upnp::Event::GatewayNotFound)) => {
                 error!("Gateway does not support UPnP");
@@ -271,10 +443,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             (_, Event::Upnp(ev)) => info!("{ev:?}"),
             (Phase::WaitingForParticipants, Event::Msg(msg)) => match msg {
-                Msg::Join(peer_id, name, addr) => {
+                Msg::Join(public_key, name) => {
                     if is_leader {
-                        println!("{peer_id} - {name}");
-                        participants.insert(peer_id, (name, addr));
+                        println!("{public_key} - {name}");
+                        participants.insert(public_key, name);
                         let msg = Msg::Participants(participants.clone()).serialize()?;
                         if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
                         {
@@ -283,9 +455,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 Msg::Participants(all_participants) => {
-                    for (peer_id, (name, _)) in all_participants.iter() {
-                        if !participants.contains_key(&peer_id) {
-                            println!("{peer_id} - {name}");
+                    for (public_key, name) in all_participants.iter() {
+                        if !participants.contains_key(public_key) {
+                            println!("{public_key} - {name}");
                         }
                     }
                     participants = all_participants;
@@ -313,21 +485,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             },
             (Phase::SendingShares, Event::Msg(msg)) => match msg {
-                Msg::Join(_, _, _) | Msg::Participants(_) | Msg::LobbyNowClosed => {
+                Msg::Join(_, _) | Msg::Participants(_) | Msg::LobbyNowClosed => {
                     println!(
                         "Already waiting for shares, but some participant still tried to join!"
                     );
                     continue;
                 }
                 Msg::Share { .. } => {}
-                Msg::Sum(peer_id, sum) => {
+                Msg::Sum(public_key, sum) => {
                     if is_leader {
-                        sums.insert(peer_id, sum);
+                        sums.insert(public_key, sum);
                     }
                 }
-                Msg::Result(avg) => {
+                Msg::Result(results) => {
                     println!("");
-                    println!("The average of the benchmarked values is: {avg:.2}");
+                    println!("Average results:");
+                    for (key, result) in results {
+                        let avg = (result  as f64 / participants.len() as f64) / 100.00;
+                        println!("{key}: {avg:.2}")
+                    }
                     std::process::exit(0);
                 }
             },

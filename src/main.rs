@@ -372,8 +372,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     continue;
                 },
                 SwarmEvent::ConnectionClosed { .. } => {
-                    eprintln!("Connection has been closed by one of the participants");
-                    continue;
+                    if result.is_none() {
+                        eprintln!("Connection has been closed by one of the participants");
+                        std::process::exit(1);
+                    } else {
+                        std::process::exit(0);
+                    }
                 },
                 ev => {
                     info!("{ev:?}");

@@ -22,7 +22,7 @@ cargo install --git https://github.com/sine-fdn/sine-benchmark.git
 
 _**Note:** You will need at least three participants to run a benchmark._
 
-Each participant is identified by (a freely chosen human-readable) name and needs to specify their private inputs in a JSON file as pairs of string keys and number values (with a maximum precision of 2 decimal digits), for example:
+Each participant is identified by (a freely chosen) name and needs to specify their private inputs in a JSON file as pairs of string keys and number values (with a maximum precision of 2 decimal digits), for example:
 
 ```json
 {

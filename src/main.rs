@@ -87,6 +87,12 @@ struct MyBehaviour {
     gossipsub: gossipsub::Behaviour,
 }
 
+enum Event {
+    Upnp(upnp::Event),
+    StdIn(String),
+    Msg(Msg),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Msg {
     Join(PublicKey, String),
@@ -112,6 +118,14 @@ enum Phase {
     WaitingForParticipants,
     ConfirmingParticipants,
     SendingShares,
+}
+
+fn print_results(results: &BTreeMap<String, i64>, participants: &HashMap<PublicKey, String>) {
+    println!("\nAverage results:");
+    for (key, result) in results.iter() {
+        let avg = (*result as f64 / participants.len() as f64) / 100.00;
+        println!("{key}: {avg:.2}")
+    }
 }
 
 #[tokio::main]
@@ -191,14 +205,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut received_shares = HashMap::<PublicKey, Vec<u8>>::new();
     let mut sums = HashMap::<PublicKey, HashMap<String, i64>>::new();
     let mut result = None;
-    enum Event {
-        Upnp(upnp::Event),
-        StdIn(String),
-        Msg(Msg),
-    }
-    let confirm_msg =
-        "Please double-check the participants. Do you want to join the benchmark? [Y/n]";
-    let starting_msg = "Starting benchmark with the current participants...";
+
     loop {
         if let Phase::SendingShares = phase {
             if swarm.behaviour().gossipsub.all_peers().count() == 0 {
@@ -331,12 +338,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .gossipsub
                     .publish(topic.clone(), msg)?;
                 if result.is_none() {
-                    println!("");
-                    println!("Average results:");
-                    for (key, result) in results.iter() {
-                        let avg = (*result as f64 / participants.len() as f64) / 100.00;
-                        println!("{key}: {avg:.2}")
-                    }
+                    print_results(&results, &participants);
                     result = Some(results);
                 }
             }
@@ -387,7 +389,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     );
                     continue;
                 }
-                println!("{starting_msg}");
+                println!("Starting benchmark with the current participants...");
                 phase = Phase::SendingShares;
                 sleep(Duration::from_millis(500)).await;
                 let msg = Msg::LobbyNowClosed.serialize()?;
@@ -398,12 +400,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             (Phase::ConfirmingParticipants, Event::StdIn(line)) => {
                 if line.trim().is_empty() || line.trim().to_lowercase() == "y" {
-                    println!("{starting_msg}");
+                    println!("Ok, joining benchmarking with the current participants...");
                     phase = Phase::SendingShares;
                 } else if line.trim().to_lowercase() == "n" {
                     std::process::exit(0);
                 } else {
-                    println!("{confirm_msg}");
+                    println!("Invalid input, please confirm or cancel using 'y' or 'n'");
                 }
             }
             (_, Event::StdIn(_)) => {}
@@ -414,12 +416,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         "{} --address={addr} --name=<your_alias> --input=<file.json>",
                         std::env::args().nth(0).unwrap_or_else(|| "<bin>".into())
                     );
-                    println!("");
                     println!(
-                        "Press ENTER to start the benchmark once all participants have joined."
+                        "\nPress ENTER to start the benchmark once all participants have joined."
                     );
-                    println!("");
-                    println!("-- Participants --");
+                    println!("\n-- Participants --");
                     println!("{pub_key} - {name}");
                 } else {
                     let msg = Msg::Join(pub_key.clone(), name.clone()).serialize()?;
@@ -427,8 +427,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         .behaviour_mut()
                         .gossipsub
                         .publish(topic.clone(), msg)?;
-                    println!("");
-                    println!("-- Participants --");
+                    println!("\n-- Participants --");
                     println!("{pub_key} - {name}");
                 }
                 swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
@@ -471,8 +470,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         std::process::exit(1);
                     } else {
                         phase = Phase::ConfirmingParticipants;
-                        println!("");
-                        println!("{confirm_msg}");
+                        println!("\nPlease double-check the participants. Do you want to join the benchmark? [Y/n]");
                     }
                 }
                 Msg::Share { .. } => {}
@@ -499,12 +497,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 Msg::Result(results) => {
-                    println!("");
-                    println!("Average results:");
-                    for (key, result) in results {
-                        let avg = (result as f64 / participants.len() as f64) / 100.00;
-                        println!("{key}: {avg:.2}")
-                    }
+                    print_results(&results, &participants);
                     std::process::exit(0);
                 }
             },

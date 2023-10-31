@@ -1,6 +1,6 @@
 # SINE Benchmark
 
-This repository contains a **privacy preserving** benchmarking tool that allows for **peer-to-peer** benchmarking against group average without disclosing inputs.
+This repository contains a **privacy preserving** benchmarking tool for **peer-to-peer** benchmarking, allowing you to benchmark your private inputs against the average of all participants.
 
 <img alt="SINE Logo" height="150" align="right" src="https://user-images.githubusercontent.com/358580/204315360-9e4916df-5080-4e7c-bd5b-7e002309b9db.png">
 
@@ -8,7 +8,7 @@ This repository contains a **privacy preserving** benchmarking tool that allows 
 
 ### Installation
 
-Install the benchmarking tool using `cargo install` from git over either `ssh` or `https`:
+Install the tool from git over either `ssh` or `https`:
 
 ```sh
 cargo install --git ssh://git@github.com/sine-fdn/sine-benchmark.git
@@ -61,7 +61,7 @@ d87e1657 5a59b72e 0df57a0f 95fbb993 - bob
 
 _**Note:** The input files of all participants need to have the same string keys._
 
-Once all participants have joined, the `benchmark leader` can hit `Enter` to begin the actual benchmarking process:
+Once everyone has joined, the first participant can hit `Enter` to begin the benchmarking process:
 
 ```sh
 Press ENTER to start the benchmark once all participants have joined.
@@ -87,7 +87,7 @@ y
 Ok, joining benchmarking with the current participants...
 ```
 
-Once all participants have confirmed, the benchmark is started and the average of all the inputs is calulated and displayed:
+Once all participants have confirmed, the benchmark is started and the average of all the inputs is calulated:
 
 ```sh
 Average results:
@@ -110,28 +110,18 @@ The protocol used in SINE Benchmark can be illustrated by this simple example:
 
 As in the example, the CLI tool takes a set of values (defined in a json to be provided by the user) and for each of the values generates a number of random shares identical to the number of other participants.
 
-When they join a benchmarking session, each participant is given a public and a private key. These will be used to **encrypt** and **sign** the shares before sending them over:
-- each share is encrypted with the public key of the participant to whom it is directed;
-- and then signed with the private key of the sender.
+When they join a benchmarking session, each participant is given a public and a private key. These will be used to **encrypt** each share with the public key of the recipient and **sign** the share with the private key of the sender.
 
-The encrypted messages are sent to all other users but only those to whom they are directed can decrypt them. The receivers then proceed to verify the signatures and decrypt the messages.
-
-Once in possession of all shares, each participant can add them to their secret share (i.e., the result of subtracting the shares to their private value) yielding their sum.
-
-Sums cannot be traced back to the private values of participants and are, therefore, sent as plain text.
+Once in possession of all shares, each participant can add them to their secret share (i.e., the result of subtracting the shares to their private value) yielding their sum. Sums cannot be traced back to the private values of participants and are, therefore, sent as plain text.
 
 With the sums of all participants in their possession, each participant can calculate the average locally.
 
-### Peer-to-peer
+### Peer-to-Peer
 
 SINE Benchmark uses peer-to-peer technology to allow for benchmarking without a server.
 
-It uses [libp2p](https://github.com/libp2p/rust-libp2p) and, in particular,
-- the [upnp network behaviour](https://github.com/libp2p/rust-libp2p/tree/master/examples/upnp); and
-- the [gossipsub](https://github.com/libp2p/specs/tree/master/pubsub/gossipsub) Publish/Subscribe (pubsub) protocol.
+It uses [libp2p](https://github.com/libp2p/rust-libp2p), two protocols in particular:
+  - [upnp](https://github.com/libp2p/rust-libp2p/tree/master/examples/upnp)
+  - [gossipsub](https://github.com/libp2p/specs/tree/master/pubsub/gossipsub)
 
-Benchmarking sessions correspond to pubsub _topics_, in which messages are sent (but cannot be decrypted by) all members at the same time.
-
-Thus, participants only need to establish connection with one peer. That peer will cue the start of the benchmark and is considered the `benchmark leader`.
-
-**Note:** The `benchmark leader` is a "normal" participant with access to exactly the same information as all others.
+The first participant will forward the (encrypted) messages using `gossipsub` to the full group of connected peers. The connection to the first participant is established using `upnp`, which needs to be supported and enabled by the network and router of the participant.

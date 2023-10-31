@@ -20,44 +20,80 @@ cargo install --git https://github.com/sine-fdn/sine-benchmark.git
 
 ### Running a Benchmark
 
-To start a benchmarking session, you will need at least three participants to ensure privacy.
+_**Note:** You will need at least three participants to run a benchmark._
 
-```sh
-sine-benchmark --name=<your-name> --input=<file.json>
+Each participant is identified by (a freely chosen human-readable) name and needs to specify their private inputs in a JSON file as pairs of string keys and number values (with a maximum precision of 2 decimal digits), for example:
+
+```json
+{
+    "revenue": 1234.56,
+    "costs": 1000,
+}
 ```
 
-You are now the `benchmark leader` and will get the following prompt:
+The first participant can then start the benchmark:
 
 ```sh
+$ sine-benchmark --name=alice --input=inputs.json
 Generating public/private key pair...
+Your public key is: 97bd80c5 ff6e8a34 e1813f97 61a47898
 A new session has been started, others can join using the following command:
-sine-benchmark --address=ip4/<xx>.<xxx>.<xx>.<xxx>/tcp/<xxxxx> --name=<your_alias> --input=<file.json>
+sine-benchmark --address=/ip4/161.230.165.79/tcp/61958 --name=<your_alias> --input=<file.json>
+
+Press ENTER to start the benchmark once all participants have joined.
+
+-- Participants --
+97bd80c5 ff6e8a34 e1813f97 61a47898 - alice
 ```
 
-Communicate your address to other participants by sharing the command above. They will then be able to join the session:
+By sharing the address, other participants can then join the benchmark:
 
 ```sh
-sine-benchmark --address=/ip4/<xx>.<xxx>.<xx>.<xxx>/tcp/<xxxxx> --name=<your-name> --input=<file.json>
+$ sine-benchmark --address=/ip4/161.230.165.79/tcp/61958 --name=bob --input=inputs.json
+Joining session at /ip4/161.230.165.79/tcp/61958...
+Generating public/private key pair...
+Your public key is: d87e1657 5a59b72e 0df57a0f 95fbb993
+
+-- Participants --
+d87e1657 5a59b72e 0df57a0f 95fbb993 - bob
+97bd80c5 ff6e8a34 e1813f97 61a47898 - alice
 ```
 
-**Note:** The input files of all participants should have the exact same keys.
+_**Note:** The input files of all participants need to have the same string keys._
 
-Everyone will be able to see the list of participants, indicating their hashed key and their name, e.g.:
+Once all participants have joined, the `benchmark leader` can hit `Enter` to begin the actual benchmarking process:
+
 ```sh
-e162c856 416cb0a9 c78155eb b8d3c9dd - foo
-271270ba 7d268105 9ae5e96e 23b8f7e4 - bar
-25431517 e42910b2 e359702e 20c61f49 - baz
+Press ENTER to start the benchmark once all participants have joined.
+
+-- Participants --
+97bd80c5 ff6e8a34 e1813f97 61a47898 - alice
+d87e1657 5a59b72e 0df57a0f 95fbb993 - bob
+34400918 89b51364 704626b4 faec8e42 - carol
+
+Starting benchmark with the current participants...
 ```
 
-Once all participants have joined, the `benchmark leader` can hit `Enter` to begin the benchmark. At that point, other participants will receive the following prompt:
+The other participants are then asked to confirm the list of participants. At this point, no data is exchanged yet. Everyone is able to see the list of participants, showing their hashed public key and their chosen name. It is good practice to manually double-check the participants' hashed keys to ensure that no man-in-the-middle attack is taking place:
 
 ```sh
+-- Participants --
+d87e1657 5a59b72e 0df57a0f 95fbb993 - bob
+97bd80c5 ff6e8a34 e1813f97 61a47898 - alice
+34400918 89b51364 704626b4 faec8e42 - carol
+
 Please double-check the participants. Do you want to join the benchmark? [Y/n]
+y
+Ok, joining benchmarking with the current participants...
 ```
 
-Checking the participants' hashed keys is a security measure to ensure that no man-in-the-middle attack is taking place.
+Once all participants have confirmed, the benchmark is started and the average of all the inputs is calulated and displayed:
 
-Once all participants have entered `Y`, the benchmark will start. Soon the average results will be displayed.
+```sh
+Average results:
+revenue: 1234.56
+costs: 1000
+```
 
 ## Technical Description
 

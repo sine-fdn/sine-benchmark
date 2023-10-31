@@ -16,7 +16,12 @@ use rsa::{
     Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::{HashMap, BTreeMap}, error::Error, path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    error::Error,
+    path::PathBuf,
+    time::Duration,
+};
 use tokio::{
     fs,
     io::{self, AsyncBufReadExt},
@@ -126,7 +131,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("Could not read file {}: {}", input.display(), e);
             std::process::exit(1);
         }
-        Ok(file) => match serde_json::from_str::<HashMap<String, i64>>(&file) {
+        Ok(file) => match serde_json::from_str::<HashMap<String, f64>>(&file) {
             Ok(json) => json,
             Err(_) => {
                 eprintln!("The file {} is not a valid JSON file with a map of string keys and integer number values.", input.display());
@@ -254,7 +259,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 let mut public_sums = HashMap::new();
                 for (key, sent_sum) in sent_sums {
-                    let secret_value = input.get(key).unwrap();
+                    let secret_value = (input.get(key).unwrap() * 100.0).round() as i64;
                     let masked_secret: i64 = secret_value.wrapping_sub(sent_sum);
                     public_sums.insert(key.clone(), masked_secret);
                 }
@@ -324,7 +329,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("");
                     println!("Average results:");
                     for (key, result) in results.iter() {
-                        let avg = *result as f64 / participants.len() as f64;
+                        let avg = (*result  as f64 / participants.len() as f64) / 100.00;
                         println!("{key}: {avg:.2}")
                     }
                     result = Some(results);
@@ -391,7 +396,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             (Phase::WaitingForParticipants, Event::Upnp(upnp::Event::NewExternalAddr(addr))) => {
                 if is_leader {
                     println!("A new session has been started, others can join using the following command:");
-                    println!("cargo run -- --address={addr} --name=<your_alias> --input=<file.json>");
+                    println!(
+                        "cargo run -- --address={addr} --name=<your_alias> --input=<file.json>"
+                    );
                     println!("");
                     println!(
                         "Press ENTER to start the benchmark once all participants have joined."
@@ -480,7 +487,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("");
                     println!("Average results:");
                     for (key, result) in results {
-                        let avg = result as f64 / participants.len() as f64;
+                        let avg = (result  as f64 / participants.len() as f64) / 100.00;
                         println!("{key}: {avg:.2}")
                     }
                     std::process::exit(0);

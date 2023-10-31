@@ -26,6 +26,7 @@ use tokio::{
     fs,
     io::{self, AsyncBufReadExt},
     select,
+    time::sleep,
 };
 
 const KEY_BITS: usize = 2048;
@@ -169,8 +170,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     if let Some(addr) = &address {
         let remote: Multiaddr = addr.parse()?;
-        swarm.dial(remote)?;
         println!("Joining session at {addr}...");
+        while let Err(_) = swarm.dial(remote.clone()) {
+            println!("Waiting for session to start at {addr}...");
+            sleep(Duration::from_millis(200)).await;
+        }
     }
 
     println!("Generating public/private key pair...");
@@ -178,6 +182,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let private_key = RsaPrivateKey::new(&mut rng, KEY_BITS).expect("failed to generate a key");
     let signing_key = SigningKey::<Sha256>::new(private_key.clone());
     let pub_key = PublicKey::from(RsaPublicKey::from(&private_key));
+    println!("Your public key is: {pub_key}");
 
     let mut phase = Phase::WaitingForParticipants;
     let mut stdin = io::BufReader::new(io::stdin()).lines();
@@ -360,6 +365,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     Event::Msg(msg)
                 },
+                SwarmEvent::IncomingConnectionError { .. } => {
+                    eprintln!("Error while establishing incoming connection");
+                    continue;
+                },
+                SwarmEvent::ConnectionClosed { .. } => {
+                    eprintln!("Connection has been closed by one of the participants");
+                    continue;
+                },
                 ev => {
                     info!("{ev:?}");
                     continue;
@@ -376,6 +389,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 println!("{starting_msg}");
                 phase = Phase::SendingShares;
+                sleep(Duration::from_millis(500)).await;
                 let msg = Msg::LobbyNowClosed.serialize()?;
                 swarm
                     .behaviour_mut()

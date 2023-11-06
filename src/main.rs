@@ -185,7 +185,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(addr) = &address {
         let remote: Multiaddr = addr.parse()?;
         println!("Joining session at {addr}...");
-        while let Err(_) = swarm.dial(remote.clone()) {
+        while swarm.dial(remote.clone()).is_err() {
             println!("Waiting for session to start at {addr}...");
             sleep(Duration::from_millis(200)).await;
         }
@@ -291,11 +291,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             .map_err(|e| format!("Not a valid signature: {e}"))?;
 
                         verifying_key
-                            .verify(&chunk, &signature)
+                            .verify(chunk, &signature)
                             .map_err(|e| format!("Verification of msg sender failed: {e}"))?;
 
                         let chunk = private_key
-                            .decrypt(Pkcs1v15Encrypt, &chunk)
+                            .decrypt(Pkcs1v15Encrypt, chunk)
                             .map_err(|e| format!("failed to decrypt: {e}"))?;
 
                         let key_len = i64::from_be_bytes(chunk[..8].try_into().unwrap()) as usize;
@@ -359,10 +359,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         continue;
                     };
                     if let Msg::Share { from, to, share } = msg.clone() {
-                        if to == pub_key.clone() {
-                            if participants.contains_key(&from) {
+                        if to == pub_key.clone() && participants.contains_key(&from) {
                                 received_shares.insert(from, share);
-                            }
                         }
                     }
                     Event::Msg(msg)
@@ -418,7 +416,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("A new session has been started, others can join using the following command:");
                     println!(
                         "{} --address={addr} --name=<your_alias> --input=<file.json>",
-                        std::env::args().nth(0).unwrap_or_else(|| "<bin>".into())
+                        std::env::args().next().unwrap_or_else(|| "<bin>".into())
                     );
                     println!(
                         "\nPress ENTER to start the benchmark once all participants have joined."

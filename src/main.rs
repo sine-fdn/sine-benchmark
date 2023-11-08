@@ -3,7 +3,7 @@ use futures::StreamExt;
 use libp2p::{
     gossipsub, noise,
     swarm::{NetworkBehaviour, SwarmEvent},
-    upnp, yamux, Multiaddr,
+    upnp, yamux, Multiaddr, PeerId,
 };
 use log::{error, info};
 use rsa::signature::SignatureEncoding;
@@ -90,13 +90,13 @@ struct MyBehaviour {
 enum Event {
     Upnp(upnp::Event),
     StdIn(String),
-    Msg(Msg),
+    Msg(Msg, PeerId),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Msg {
     Join(PublicKey, String),
-    Participants(HashMap<PublicKey, String>),
+    Participants(HashMap<PublicKey, (String, PeerId)>),
     LobbyNowClosed,
     Share {
         from: PublicKey,
@@ -120,7 +120,10 @@ enum Phase {
     SendingShares,
 }
 
-fn print_results(results: &BTreeMap<String, i64>, participants: &HashMap<PublicKey, String>) {
+fn print_results(
+    results: &BTreeMap<String, i64>,
+    participants: &HashMap<PublicKey, (String, PeerId)>,
+) {
     println!("\nAverage results:");
     for (key, result) in results.iter() {
         let avg = (*result as f64 / participants.len() as f64) / 100.00;
@@ -200,7 +203,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut phase = Phase::WaitingForParticipants;
     let mut stdin = io::BufReader::new(io::stdin()).lines();
-    let mut participants = HashMap::<PublicKey, String>::new();
+    let mut participants = HashMap::<PublicKey, (String, PeerId)>::new();
     let mut sent_shares = HashMap::<PublicKey, HashMap<&String, i64>>::new();
     let mut received_shares = HashMap::<PublicKey, Vec<u8>>::new();
     let mut sums = HashMap::<PublicKey, HashMap<String, i64>>::new();
@@ -363,16 +366,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 received_shares.insert(from, share);
                         }
                     }
-                    Event::Msg(msg)
+                    Event::Msg(msg, propagation_source)
                 },
                 SwarmEvent::IncomingConnectionError { .. } => {
                     eprintln!("Error while establishing incoming connection");
                     continue;
                 },
-                SwarmEvent::ConnectionClosed { .. } => {
+                SwarmEvent::ConnectionClosed { peer_id, .. } => {
                     if result.is_none() {
-                        eprintln!("Connection has been closed by one of the participants");
-                        std::process::exit(1);
+
+
+
+                        // println!("Connection has been closed by {}", disconnected.0);
+                        // participants.retain(|_, (_, id)| *id != peer_id);
+                        // let disconnected = participants.clone().into_iter().find(|(_, (_, id))| *id == peer_id).unwrap().0;
+                        // participants.remove(&disconnected);
+                        println!("participants {participants:?}");
+
+                        participants.retain(|_, (_, id)| {
+                            println!("id {id:?} - peer_id {peer_id:?}, {}", *id != peer_id);
+                            *id != peer_id
+                        });
+
+
+                        println!("\n-- Participants --");
+                        for (pub_key, (name, _)) in participants.iter() {
+                            println!("{pub_key} - {name}");
+                        }
+                        continue
                     } else {
                         std::process::exit(0);
                     }
@@ -433,7 +454,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("{pub_key} - {name}");
                 }
                 swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
-                participants.insert(pub_key.clone(), name.clone());
+                participants.insert(
+                    pub_key.clone(),
+                    (name.clone(), swarm.local_peer_id().clone()),
+                );
             }
             (_, Event::Upnp(upnp::Event::GatewayNotFound)) => {
                 error!("Gateway does not support UPnP");
@@ -444,11 +468,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 break;
             }
             (_, Event::Upnp(ev)) => info!("{ev:?}"),
-            (Phase::WaitingForParticipants, Event::Msg(msg)) => match msg {
+            (Phase::WaitingForParticipants, Event::Msg(msg, peer_id)) => match msg {
                 Msg::Join(public_key, name) => {
                     if is_leader {
                         println!("{public_key} - {name}");
-                        participants.insert(public_key, name);
+                        participants.insert(public_key, (name, peer_id));
                         let msg = Msg::Participants(participants.clone()).serialize()?;
                         if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
                         {
@@ -457,7 +481,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 Msg::Participants(all_participants) => {
-                    for (public_key, name) in all_participants.iter() {
+                    for (public_key, (name, _)) in all_participants.iter() {
                         if !participants.contains_key(public_key) {
                             println!("{public_key} - {name}");
                         }
@@ -485,7 +509,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     std::process::exit(1);
                 }
             },
-            (Phase::SendingShares, Event::Msg(msg)) => match msg {
+            (Phase::SendingShares, Event::Msg(msg, _peer_id)) => match msg {
                 Msg::Join(_, _) | Msg::Participants(_) | Msg::LobbyNowClosed => {
                     println!(
                         "Already waiting for shares, but some participant still tried to join!"

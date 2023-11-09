@@ -110,7 +110,7 @@ The protocol used in SINE Benchmark can be illustrated by this simple example:
 
 As in the example, the CLI tool takes a set of values (defined in a json to be provided by the user) and for each of the values generates a number of random shares identical to the number of other participants.
 
-When they join a benchmarking session, each participant is given a public and a private key. These will be used to **encrypt** each share with the public key of the recipient and **sign** the share with the private key of the sender.
+When they join a benchmarking session, each participant generates a public and a private key. These will be used to **encrypt** each share with the public key of the recipient and **sign** the share with the private key of the sender.
 
 Once in possession of all shares, each participant can add them to their secret share (i.e., the result of subtracting the shares to their private value) yielding their sum. Sums cannot be traced back to the private values of participants and are, therefore, sent as plain text.
 

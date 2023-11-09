@@ -96,6 +96,7 @@ enum Event {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Msg {
     Join(PublicKey, String),
+    Left(PeerId, String),
     Participants(HashMap<PublicKey, (String, PeerId)>),
     LobbyNowClosed,
     Share {
@@ -374,25 +375,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 },
                 SwarmEvent::ConnectionClosed { peer_id, .. } => {
                     if result.is_none() {
+                        let Some(disconnected) = participants.iter().find(|(_, (_, id))| *id == peer_id) else {
+                            println!("Connection error, please try again.");
+                            continue;
+                        };
+                        let disconnected = disconnected.1.0.clone();
+                        println!("Participant {disconnected} disconnected. Sending message to the other participants");
+                        let msg = Msg::Left(peer_id, disconnected).serialize()?;
+                        swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .publish(topic.clone(), msg)?;
 
+                            participants.retain(|_, (_, id)| *id != peer_id);
 
+                            let msg = Msg::Participants(participants.clone()).serialize()?;
+                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
+                                {
+                                    error!("Could not publish to gossipsub: {e:?}");
+                                }
 
-                        // println!("Connection has been closed by {}", disconnected.0);
-                        // participants.retain(|_, (_, id)| *id != peer_id);
-                        // let disconnected = participants.clone().into_iter().find(|(_, (_, id))| *id == peer_id).unwrap().0;
-                        // participants.remove(&disconnected);
-                        println!("participants {participants:?}");
-
-                        participants.retain(|_, (_, id)| {
-                            println!("id {id:?} - peer_id {peer_id:?}, {}", *id != peer_id);
-                            *id != peer_id
-                        });
-
-
-                        println!("\n-- Participants --");
-                        for (pub_key, (name, _)) in participants.iter() {
-                            println!("{pub_key} - {name}");
-                        }
                         continue
                     } else {
                         std::process::exit(0);
@@ -480,6 +482,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                 }
+                Msg::Left(_, name) => {
+                    println!("\nParticipant {name} disconnected");
+
+                    println!("\n-- Participants --");
+                    for (pub_key, (name, _)) in participants.iter() {
+                        println!("{pub_key} - {name}");
+                    }
+                }
                 Msg::Participants(all_participants) => {
                     for (public_key, (name, _)) in all_participants.iter() {
                         if !participants.contains_key(public_key) {
@@ -515,6 +525,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         "Already waiting for shares, but some participant still tried to join!"
                     );
                     continue;
+                }
+                Msg::Left(_, _) => {
+                    println!("Aborting benchmark: a participant left the while waiting for shares");
+                    std::process::exit(1);
                 }
                 Msg::Share { .. } => {}
                 Msg::Sum(public_key, sum) => {

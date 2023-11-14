@@ -96,7 +96,7 @@ enum Event {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Msg {
     Join(PublicKey, String),
-    Left(PeerId, String),
+    Quit(PeerId, String),
     Participants(HashMap<PublicKey, (String, PeerId)>),
     LobbyNowClosed,
     Share {
@@ -119,6 +119,13 @@ enum Phase {
     WaitingForParticipants,
     ConfirmingParticipants,
     SendingShares,
+}
+
+fn print_participants(participants: &HashMap<PublicKey, (String, PeerId)>) {
+    println!("\n-- Participants --");
+    for (pub_key, (name, _)) in participants {
+        println!("{pub_key} - {name}");
+    }
 }
 
 fn print_results(
@@ -379,21 +386,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             println!("Connection error, please try again.");
                             continue;
                         };
+
                         let disconnected = disconnected.1.0.clone();
-                        println!("Participant {disconnected} disconnected. Sending message to the other participants");
-                        let msg = Msg::Left(peer_id, disconnected).serialize()?;
+                        println!("\nParticipant {disconnected} disconnected");
+                        let msg = Msg::Quit(peer_id, disconnected).serialize()?;
                         swarm
                             .behaviour_mut()
                             .gossipsub
                             .publish(topic.clone(), msg)?;
 
-                            participants.retain(|_, (_, id)| *id != peer_id);
+                        participants.retain(|_, (_, id)| *id != peer_id);
 
-                            let msg = Msg::Participants(participants.clone()).serialize()?;
-                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
-                                {
-                                    error!("Could not publish to gossipsub: {e:?}");
-                                }
+                        print_participants(&participants);
+
+                        let msg = Msg::Participants(participants.clone()).serialize()?;
+                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
+                            {
+                                error!("Could not publish to gossipsub: {e:?}");
+                            }
 
                         continue
                     } else {
@@ -456,10 +466,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("{pub_key} - {name}");
                 }
                 swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
-                participants.insert(
-                    pub_key.clone(),
-                    (name.clone(), swarm.local_peer_id().clone()),
-                );
+                participants.insert(pub_key.clone(), (name.clone(), *swarm.local_peer_id()));
             }
             (_, Event::Upnp(upnp::Event::GatewayNotFound)) => {
                 error!("Gateway does not support UPnP");
@@ -482,13 +489,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                 }
-                Msg::Left(_, name) => {
+                Msg::Quit(_, name) => {
                     println!("\nParticipant {name} disconnected");
 
-                    println!("\n-- Participants --");
-                    for (pub_key, (name, _)) in participants.iter() {
-                        println!("{pub_key} - {name}");
-                    }
+                    print_participants(&participants);
                 }
                 Msg::Participants(all_participants) => {
                     for (public_key, (name, _)) in all_participants.iter() {
@@ -526,7 +530,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     );
                     continue;
                 }
-                Msg::Left(_, _) => {
+                Msg::Quit(_, _) => {
                     println!("Aborting benchmark: a participant left the while waiting for shares");
                     std::process::exit(1);
                 }

@@ -384,11 +384,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     if result.is_none() {
                         let Some(disconnected) = participants.iter().find(|(_, (_, id))| *id == peer_id) else {
                             println!("Connection error, please try again.");
-                            continue;
+                            std::process::exit(1);
                         };
 
                         let disconnected = disconnected.1.0.clone();
+
+                        if swarm.connected_peers().count() == 0 {
+                            println!("The benchmark leader cancelled the session.");
+                            std::process::exit(1);
+                        }
+
                         println!("\nParticipant {disconnected} disconnected");
+
                         let msg = Msg::Quit(peer_id, disconnected).serialize()?;
                         swarm
                             .behaviour_mut()

@@ -382,37 +382,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 },
                 SwarmEvent::ConnectionClosed { peer_id, .. } => {
                     if result.is_none() {
-                        let Some(disconnected) = participants.iter().find(|(_, (_, id))| *id == peer_id) else {
+                        let Some(disconnected) =
+                        participants.iter().find(|(_, (_, id))| *id == peer_id)
+                        else {
                             println!("Connection error, please try again.");
                             std::process::exit(1);
                         };
 
-                        let disconnected = disconnected.1.0.clone();
-
-                        if swarm.connected_peers().count() == 0 && !is_leader {
-                            println!("The benchmark leader cancelled the session.");
-                            std::process::exit(1);
-                        }
+                        let disconnected = disconnected.1 .0.clone();
 
                         println!("\nParticipant {disconnected} disconnected");
 
-                        let msg = Msg::Quit(peer_id, disconnected).serialize()?;
-                        swarm
-                            .behaviour_mut()
-                            .gossipsub
-                            .publish(topic.clone(), msg)?;
+                        if swarm.connected_peers().count() == 0 && is_leader {
+                            println!("Connected peers = 0");
+                            participants.retain(|_, (_, id)| *id != peer_id);
+                        } else if is_leader {
+                            let msg = Msg::Quit(peer_id, disconnected).serialize()?;
+                            swarm
+                                .behaviour_mut()
+                                .gossipsub
+                                .publish(topic.clone(), msg)?;
 
-                        participants.retain(|_, (_, id)| *id != peer_id);
+                            participants.retain(|_, (_, id)| *id != peer_id);
 
-                        print_participants(&participants);
+                            print_participants(&participants);
 
-                        let msg = Msg::Participants(participants.clone()).serialize()?;
-                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
+                            let msg = Msg::Participants(participants.clone()).serialize()?;
+                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
                             {
                                 error!("Could not publish to gossipsub: {e:?}");
                             }
-
-                        continue
+                        }
+                        continue;
                     } else {
                         std::process::exit(0);
                     }

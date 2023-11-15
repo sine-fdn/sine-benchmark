@@ -116,19 +116,19 @@ fn quit_and_rejoin_session() -> Result<(), Box<dyn std::error::Error>> {
             println!("bar > {l}");
             if l.contains("- foo") {
                 participant.kill().unwrap();
-                // break;
+                break;
             }
         }
     });
 
-    // while let Some(Ok(l)) = lines.next() {
-    //     println!("foo > {l}");
-    //     if l.contains("bar disconnected") {
-    //         break;
-    //     }
-    // }
+    while let Some(Ok(l)) = lines.next() {
+        println!("foo > {l}");
+        if l.contains("bar disconnected") {
+            break;
+        }
+    }
 
-    // bar_handle.join().unwrap();
+    bar_handle.join().unwrap();
 
     let mut threads = vec![];
     for name in ["baz", "qux"] {
@@ -168,8 +168,6 @@ fn quit_and_rejoin_session() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut participant_count = 1;
     let mut benchmark_complete = false;
-    println!("Waiting for next line from foo");
-    println!("lines.next(): {:?}", lines.next());
     while let Some(Ok(l)) = lines.next() {
         println!("foo > {}", l);
         if l.contains("- baz") || l.contains("- qux") {

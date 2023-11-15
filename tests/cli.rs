@@ -71,6 +71,139 @@ fn invalid_address() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn quit_and_rejoin_session() -> Result<(), Box<dyn std::error::Error>> {
+    let mut new_session = new_command("foo", None, "tests/test_files/valid_json.json")?;
+
+    let mut leader = new_session
+        .stdout(Stdio::piped())
+        .stdin(Stdio::piped())
+        .spawn()?;
+    let stdout = leader.stdout.take().unwrap();
+    let reader = BufReader::new(stdout);
+    let stdin = leader.stdin.take().unwrap();
+    let mut writer = BufWriter::new(stdin);
+    let mut lines = reader.lines();
+
+    let address = loop {
+        if let Some(Ok(l)) = lines.next() {
+            if l.contains("--address=/ip4/") {
+                break l
+                    .split(" ")
+                    .find(|s| s.contains("--address=/ip4/"))
+                    .unwrap()
+                    .replace("--address=", "");
+            }
+        }
+    };
+
+    let bar_address = address.clone();
+    let bar_handle = thread::spawn(move || {
+        let mut participant = new_command(
+            "bar",
+            Some(&bar_address),
+            "tests/test_files/valid_json.json",
+        )
+        .unwrap()
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+        let stdout = participant.stdout.take().unwrap();
+        let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
+
+        while let Some(Ok(l)) = lines.next() {
+            println!("bar > {l}");
+            if l.contains("- foo") {
+                participant.kill().unwrap();
+                // break;
+            }
+        }
+    });
+
+    // while let Some(Ok(l)) = lines.next() {
+    //     println!("foo > {l}");
+    //     if l.contains("bar disconnected") {
+    //         break;
+    //     }
+    // }
+
+    // bar_handle.join().unwrap();
+
+    let mut threads = vec![];
+    for name in ["baz", "qux"] {
+        sleep(Duration::from_millis(200));
+        let address = address.clone();
+        threads.push(thread::spawn(move || {
+            let mut participant =
+                new_command(name, Some(&address), "tests/test_files/valid_json.json")
+                    .unwrap()
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+
+            let stdout = participant.stdout.take().unwrap();
+            let reader = BufReader::new(stdout);
+            let stdin = participant.stdin.take().unwrap();
+            let mut writer = BufWriter::new(stdin);
+            let mut lines = reader.lines();
+
+            while let Some(Ok(l)) = lines.next() {
+                println!("{name} > {l}");
+
+                if l.contains("Do you want to join the benchmark?") {
+                    sleep(Duration::from_millis(200));
+                    writeln!(writer, "y").unwrap();
+                    writer.flush().unwrap();
+                }
+
+                if l.contains("results") {
+                    participant.kill().unwrap();
+                    return;
+                }
+            }
+        }));
+    }
+
+    let mut participant_count = 1;
+    let mut benchmark_complete = false;
+    println!("Waiting for next line from foo");
+    println!("lines.next(): {:?}", lines.next());
+    while let Some(Ok(l)) = lines.next() {
+        println!("foo > {}", l);
+        if l.contains("- baz") || l.contains("- qux") {
+            participant_count += 1;
+        }
+        if participant_count == 3 {
+            sleep(Duration::from_millis(200));
+            writeln!(writer, "").unwrap();
+            writer.flush().unwrap();
+        }
+        if l.contains("results") {
+            benchmark_complete = true;
+            break;
+        }
+    }
+
+    sleep(Duration::from_millis(200));
+    leader.kill()?;
+
+    for t in threads {
+        t.join().unwrap();
+    }
+
+    if benchmark_complete {
+        Ok(())
+    } else {
+        Err(Box::new(Error::new(
+            ErrorKind::Other,
+            "Could not complete benchmark",
+        )))
+    }
+}
+
+#[test]
 fn session() -> Result<(), Box<dyn std::error::Error>> {
     let mut new_session = new_command("foo", None, "tests/test_files/valid_json.json")?;
 

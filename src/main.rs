@@ -389,7 +389,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                         let disconnected = disconnected.1.0.clone();
 
-                        if swarm.connected_peers().count() == 0 {
+                        if swarm.connected_peers().count() == 0 && !is_leader {
                             println!("The benchmark leader cancelled the session.");
                             std::process::exit(1);
                         }

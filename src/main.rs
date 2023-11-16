@@ -91,6 +91,7 @@ enum Event {
     Upnp(upnp::Event),
     StdIn(String),
     Msg(Msg, PeerId),
+    ConnectionClosed(PeerId),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -380,44 +381,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     eprintln!("Error while establishing incoming connection");
                     continue;
                 },
-                SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                    if result.is_none() {
-                        let Some(disconnected) =
-                        participants.iter().find(|(_, (_, id))| *id == peer_id)
-                        else {
-                            println!("Connection error, please try again.");
-                            std::process::exit(1);
-                        };
-
-                        let disconnected = disconnected.1 .0.clone();
-
-                        println!("\nParticipant {disconnected} disconnected");
-
-                        if swarm.connected_peers().count() == 0 && is_leader {
-                            println!("Connected peers = 0");
-                            participants.retain(|_, (_, id)| *id != peer_id);
-                        } else if is_leader {
-                            let msg = Msg::Quit(peer_id, disconnected).serialize()?;
-                            swarm
-                                .behaviour_mut()
-                                .gossipsub
-                                .publish(topic.clone(), msg)?;
-
-                            participants.retain(|_, (_, id)| *id != peer_id);
-
-                            print_participants(&participants);
-
-                            let msg = Msg::Participants(participants.clone()).serialize()?;
-                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
-                            {
-                                error!("Could not publish to gossipsub: {e:?}");
-                            }
-                        }
-                        continue;
-                    } else {
-                        std::process::exit(0);
-                    }
-                },
+                SwarmEvent::ConnectionClosed { peer_id, .. } => Event::ConnectionClosed(peer_id),
                 ev => {
                     info!("{ev:?}");
                     continue;
@@ -485,6 +449,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 break;
             }
             (_, Event::Upnp(ev)) => info!("{ev:?}"),
+            (Phase::WaitingForParticipants, Event::ConnectionClosed(peer_id)) => {
+                if result.is_none() {
+                    let Some(disconnected) =
+                        participants.iter().find(|(_, (_, id))| *id == peer_id)
+                    else {
+                        println!("Connection error, please try again.");
+                        std::process::exit(1);
+                    };
+
+                    let disconnected = disconnected.1 .0.clone();
+
+                    println!("\nParticipant {disconnected} disconnected");
+
+                    if swarm.connected_peers().count() == 0 && is_leader {
+                        participants.retain(|_, (_, id)| *id != peer_id);
+                    } else if is_leader {
+                        let msg = Msg::Quit(peer_id, disconnected).serialize()?;
+                        swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .publish(topic.clone(), msg)?;
+
+                        participants.retain(|_, (_, id)| *id != peer_id);
+
+                        print_participants(&participants);
+
+                        let msg = Msg::Participants(participants.clone()).serialize()?;
+                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg)
+                        {
+                            error!("Could not publish to gossipsub: {e:?}");
+                        }
+                    }
+                    continue;
+                } else {
+                    std::process::exit(0);
+                }
+            }
             (Phase::WaitingForParticipants, Event::Msg(msg, peer_id)) => match msg {
                 Msg::Join(public_key, name) => {
                     if is_leader {
@@ -538,10 +539,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     );
                     continue;
                 }
-                Msg::Quit(_, _) => {
-                    println!("Aborting benchmark: a participant left the while waiting for shares");
-                    std::process::exit(1);
-                }
+                Msg::Quit(..) => {}
                 Msg::Share { .. } => {}
                 Msg::Sum(public_key, sum) => {
                     if is_leader {
@@ -553,6 +551,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     std::process::exit(0);
                 }
             },
+            (Phase::SendingShares, Event::ConnectionClosed(peer_id)) => {
+                if is_leader {
+                    let Some(disconnected) =
+                        participants.iter().find(|(_, (_, id))| *id == peer_id)
+                    else {
+                        println!("Connection error, please try again.");
+                        std::process::exit(1);
+                    };
+
+                    let disconnected = disconnected.1 .0.clone();
+                    println!(
+                        "Aborting benchmark: participant {disconnected} left the while waiting for shares"
+                    );
+                } else {
+                    println!("Aborting benchmark: a participant left while waiting for shares");
+                }
+                std::process::exit(1);
+            }
             (Phase::ConfirmingParticipants, _) => {}
         }
     }

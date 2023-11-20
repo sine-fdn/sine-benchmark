@@ -539,8 +539,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     );
                     continue;
                 }
-                Msg::Quit(..) => {}
-                Msg::Share { .. } => {}
+                Msg::Quit(..) | Msg::Share { .. } => {},
                 Msg::Sum(public_key, sum) => {
                     if is_leader {
                         sums.insert(public_key, sum);
@@ -553,14 +552,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             },
             (Phase::SendingShares, Event::ConnectionClosed(peer_id)) => {
                 if is_leader {
-                    let Some(disconnected) =
+                    let Some((_, (disconnected, _))) =
                         participants.iter().find(|(_, (_, id))| *id == peer_id)
                     else {
                         println!("Connection error, please try again.");
                         std::process::exit(1);
                     };
 
-                    let disconnected = disconnected.1 .0.clone();
                     println!(
                         "Aborting benchmark: participant {disconnected} left the while waiting for shares"
                     );

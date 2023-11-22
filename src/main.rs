@@ -219,9 +219,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut result = None;
 
     loop {
+        if !is_leader {
+            if swarm.behaviour().gossipsub.all_peers().count() == 0 {
+                if result.is_none() {
+                    eprintln!("The benchmark was cancelled by one of the participants, exiting.");
+                }
+                std::process::exit(1);
+            }
+        }
         if let Phase::SendingShares = phase {
             if swarm.behaviour().gossipsub.all_peers().count() == 0 {
-                std::process::exit(0);
+                if result.is_none() {
+                    eprintln!("The benchmark was cancelled by one of the participants, exiting.");
+                }
+                std::process::exit(1);
             }
             if sent_shares.is_empty() {
                 for public_key in participants.keys() {
@@ -451,21 +462,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
             (_, Event::Upnp(ev)) => info!("{ev:?}"),
             (Phase::WaitingForParticipants, Event::ConnectionClosed(peer_id)) => {
                 if result.is_none() {
-                    let Some(disconnected) =
+                    let Some((_, (disconnected, _))) =
                         participants.iter().find(|(_, (_, id))| *id == peer_id)
                     else {
-                        println!("Connection error, please try again.");
-                        std::process::exit(1);
+                        continue;
                     };
-
-                    let disconnected = disconnected.1 .0.clone();
 
                     println!("\nParticipant {disconnected} disconnected");
 
                     if swarm.connected_peers().count() == 0 && is_leader {
                         participants.retain(|_, (_, id)| *id != peer_id);
                     } else if is_leader {
-                        let msg = Msg::Quit(peer_id, disconnected).serialize()?;
+                        let msg = Msg::Quit(peer_id, disconnected.clone()).serialize()?;
                         swarm
                             .behaviour_mut()
                             .gossipsub
@@ -539,7 +547,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     );
                     continue;
                 }
-                Msg::Quit(..) | Msg::Share { .. } => {},
+                Msg::Quit(..) | Msg::Share { .. } => {}
                 Msg::Sum(public_key, sum) => {
                     if is_leader {
                         sums.insert(public_key, sum);
@@ -551,6 +559,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             },
             (Phase::SendingShares, Event::ConnectionClosed(peer_id)) => {
+                if result.is_some() {
+                    continue;
+                }
                 if is_leader {
                     let Some((_, (disconnected, _))) =
                         participants.iter().find(|(_, (_, id))| *id == peer_id)
@@ -560,10 +571,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     };
 
                     println!(
-                        "Aborting benchmark: participant {disconnected} left the while waiting for shares"
+                        "Participant {disconnected} left, aborting the benchmark."
                     );
                 } else {
-                    println!("Aborting benchmark: a participant left while waiting for shares");
+                    println!("A participant left, aborting the benchmark.");
                 }
                 std::process::exit(1);
             }

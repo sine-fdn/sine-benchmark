@@ -219,11 +219,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut result = None;
 
     loop {
-        if !is_leader && swarm.behaviour().gossipsub.all_peers().count() == 0 {
-            if result.is_none() {
-                eprintln!("The benchmark was cancelled by one of the participants, exiting.");
+        if let Phase::ConfirmingParticipants = phase {
+            if swarm.behaviour().gossipsub.all_peers().count() == 0 {
+                if result.is_none() {
+                    eprintln!("Not everyone agreed to participate, exiting without running the benchmark.");
+                }
+                std::process::exit(1);
             }
-            std::process::exit(1);
         }
         if let Phase::SendingShares = phase {
             if swarm.behaviour().gossipsub.all_peers().count() == 0 {

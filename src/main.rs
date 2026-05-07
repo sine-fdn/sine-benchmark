@@ -179,7 +179,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .heartbeat_interval(Duration::from_secs(10))
                 .validation_mode(gossipsub::ValidationMode::Strict)
                 .build()
-                .map_err(|msg| io::Error::new(io::ErrorKind::Other, msg))?;
+                .map_err(io::Error::other)?;
 
             let upnp = upnp::tokio::Behaviour::default();
             let gossipsub = gossipsub::Behaviour::new(
@@ -246,7 +246,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         shares.insert(key, share);
 
                         let mut chunk = [0u8; MAX_MSG_SIZE_BYTES];
-                        let key_len = key.as_bytes().len() as i64;
+                        let key_len = key.len() as i64;
                         let max_size = MAX_MSG_SIZE_BYTES - 16;
                         if (key_len as usize) > MAX_MSG_SIZE_BYTES - 16 {
                             eprintln!("Key '{key}' ({key_len} bytes) exceeds maximum key size of {max_size} bytes");
